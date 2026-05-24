@@ -122,6 +122,16 @@ def _exec_run(container, cmd: list[str], **kwargs):
 # Terminal auto-open helper
 # ---------------------------------------------------------------------------
 
+# Common kwargs for all Popen calls: fully detach stdio from the MCP server's
+# own stdin/stdout/stderr pipe.  Without this, the child process inherits the
+# MCP pipe file descriptors and writing to them after the MCP client closes
+# causes an EPIPE that crashes the server.
+_POPEN_DEVNULL = dict(
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+)
+
 
 def _open_terminal_with_logs(container_id: str) -> None:
     """Open a terminal window running 'docker logs -f <container_id>'.
@@ -129,9 +139,10 @@ def _open_terminal_with_logs(container_id: str) -> None:
     Behaviour depends on _TERMINAL:
       - None          : do nothing
       - "wt.exe"      : Windows Terminal via 'cmd.exe /c start wt.exe ...'
-                        (required because wt.exe is an App Execution Alias
-                        and cannot be spawned directly from a non-interactive
-                        process such as an MCP server)
+                        (wt.exe is a Windows App Execution Alias and cannot be
+                        spawned directly from a non-interactive process such as
+                        an MCP server; routing through cmd.exe /c start works
+                        around that restriction)
       - "osascript"   : macOS Terminal.app via AppleScript
       - other         : treated as a generic terminal emulator that accepts
                         -e <command> (e.g. gnome-terminal, xterm)
@@ -143,25 +154,28 @@ def _open_terminal_with_logs(container_id: str) -> None:
 
     try:
         if _TERMINAL == "wt.exe":
-            # wt.exe is a Windows App Execution Alias; it cannot be spawned
-            # directly from a background/non-interactive process.
-            # Routing through 'cmd.exe /c start' works around that restriction.
+            # Use CREATE_NEW_PROCESS_GROUP so the child gets its own console
+            # and is fully detached from the MCP server process group.
+            # DETACHED_PROCESS is intentionally omitted: it conflicts with
+            # CREATE_NEW_PROCESS_GROUP and can cause a crash on some Python
+            # versions.
             subprocess.Popen(
                 ["cmd.exe", "/c", "start", "wt.exe", "cmd.exe", "/k", log_cmd],
-                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                **_POPEN_DEVNULL,
             )
         elif _TERMINAL == "osascript":
             # macOS: open Terminal.app and run the command
             script = (
-                f'tell application "Terminal"\n'
-                f'  activate\n'
+                'tell application "Terminal"\n'
+                '  activate\n'
                 f'  do script "{log_cmd}"\n'
-                f'end tell'
+                'end tell'
             )
-            subprocess.Popen(["osascript", "-e", script])
+            subprocess.Popen(["osascript", "-e", script], **_POPEN_DEVNULL)
         else:
             # Generic terminal emulator (e.g. gnome-terminal, xterm, konsole)
-            subprocess.Popen([_TERMINAL, "-e", log_cmd])
+            subprocess.Popen([_TERMINAL, "-e", log_cmd], **_POPEN_DEVNULL)
     except Exception as e:
         logger.warning("Failed to open terminal (%s): %s", _TERMINAL, e)
 
