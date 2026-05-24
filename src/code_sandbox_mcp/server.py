@@ -9,7 +9,6 @@ import inspect
 import io
 import logging
 import os
-import platform
 import subprocess
 import sys
 import tarfile
@@ -129,7 +128,10 @@ def _open_terminal_with_logs(container_id: str) -> None:
 
     Behaviour depends on _TERMINAL:
       - None          : do nothing
-      - "wt.exe"      : Windows Terminal
+      - "wt.exe"      : Windows Terminal via 'cmd.exe /c start wt.exe ...'
+                        (required because wt.exe is an App Execution Alias
+                        and cannot be spawned directly from a non-interactive
+                        process such as an MCP server)
       - "osascript"   : macOS Terminal.app via AppleScript
       - other         : treated as a generic terminal emulator that accepts
                         -e <command> (e.g. gnome-terminal, xterm)
@@ -141,10 +143,11 @@ def _open_terminal_with_logs(container_id: str) -> None:
 
     try:
         if _TERMINAL == "wt.exe":
-            # Windows Terminal: open a new tab running the command, then keep
-            # the shell alive so the window doesn't close immediately.
+            # wt.exe is a Windows App Execution Alias; it cannot be spawned
+            # directly from a background/non-interactive process.
+            # Routing through 'cmd.exe /c start' works around that restriction.
             subprocess.Popen(
-                ["wt.exe", "new-tab", "--", "cmd.exe", "/k", log_cmd],
+                ["cmd.exe", "/c", "start", "wt.exe", "cmd.exe", "/k", log_cmd],
                 creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
             )
         elif _TERMINAL == "osascript":
@@ -368,7 +371,7 @@ def sandbox_exec_background(container_id: str, commands: list[str]) -> str:
     _open_terminal_with_logs(container_id)
 
     terminal_note = (
-        f"\nA terminal window has been opened showing live output (docker logs -f)."
+        "\nA terminal window has been opened showing live output (docker logs -f)."
         if _TERMINAL
         else ""
     )
