@@ -57,6 +57,9 @@ _PASS_THROUGH_KEYS: list[str] = []
 _EXEC_TIMEOUT: int = 300  # Default 5 minutes
 _TERMINAL: str | None = None  # Full path to terminal executable
 
+# Path inside the container where background job output is streamed
+_CONTAINER_LOG_PATH = "/tmp/mcp.log"
+
 
 def _container_env() -> dict[str, str]:
     """Return env vars that should be injected into every new container."""
@@ -123,62 +126,52 @@ def _exec_run(container, cmd: list[str], **kwargs):
 # ---------------------------------------------------------------------------
 
 def _open_terminal_with_logs(container_id: str) -> None:
-    """Open a terminal window tailing 'docker logs -f <container_id>'.
+    """Open a terminal window tailing /tmp/mcp.log inside the container.
+
+    Uses 'docker exec -it <container_id> tail -f /tmp/mcp.log' so that
+    output from exec_run (which does NOT appear in 'docker logs') is visible.
 
     --terminal must be the full path to a terminal executable.
-
-    On Windows, CREATE_NEW_CONSOLE is added automatically so a visible
-    console window appears. stdin/stdout/stderr are always redirected to
-    DEVNULL to prevent inheriting the MCP server's stdio pipe (which would
-    cause an EPIPE crash when the MCP client closes the connection).
+    On Windows, CREATE_NEW_CONSOLE is added so a visible window appears.
 
     Examples:
-        Windows cmd.exe:
-            --terminal "C:\\Windows\\System32\\cmd.exe"
-            → opens: cmd.exe /k docker logs -f <container_id>
-
-        macOS Terminal.app (via osascript):
-            --terminal "/usr/bin/osascript"
-            → opens Terminal.app and runs docker logs -f <container_id>
+        Windows: --terminal "C:\\Windows\\System32\\cmd.exe"
+        macOS:   --terminal "/usr/bin/osascript"
     """
     if _TERMINAL is None:
         return
 
-    log_cmd = f"docker logs -f {container_id}"
+    tail_cmd = f"docker exec -it {container_id} tail -f {_CONTAINER_LOG_PATH}"
 
     try:
         if sys.platform == "win32":
-            cmd = [_TERMINAL, "/k", log_cmd]
             subprocess.Popen(
-                cmd,
+                [_TERMINAL, "/k", tail_cmd],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NEW_CONSOLE,
             )
+        elif _TERMINAL.endswith("osascript"):
+            script = (
+                'tell application "Terminal"\n'
+                '  activate\n'
+                f'  do script "{tail_cmd}"\n'
+                'end tell'
+            )
+            subprocess.Popen(
+                [_TERMINAL, "-e", script],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
         else:
-            # macOS / Linux: use osascript or a terminal emulator with -e
-            if _TERMINAL.endswith("osascript"):
-                script = (
-                    'tell application "Terminal"\n'
-                    '  activate\n'
-                    f'  do script "{log_cmd}"\n'
-                    'end tell'
-                )
-                subprocess.Popen(
-                    [_TERMINAL, "-e", script],
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-            else:
-                # Generic terminal emulator accepting -e (gnome-terminal, xterm, etc.)
-                subprocess.Popen(
-                    [_TERMINAL, "-e", log_cmd],
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
+            subprocess.Popen(
+                [_TERMINAL, "-e", tail_cmd],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
     except Exception as e:
         logger.warning("Failed to open terminal (%s): %s", _TERMINAL, e)
 
@@ -197,7 +190,11 @@ def _run_commands_in_background(
     commands: list[str],
     timeout: int,
 ):
-    """Run commands in a background thread, updating job status."""
+    """Run commands in a background thread, updating job status.
+
+    Each command's output is tee'd to _CONTAINER_LOG_PATH inside the
+    container so a terminal running 'tail -f' can display it in real time.
+    """
     client = _docker()
     try:
         container = client.containers.get(container_id)
@@ -218,6 +215,14 @@ def _run_commands_in_background(
             }
         return
 
+    # Initialise the log file inside the container
+    _exec_run(
+        container,
+        ["sh", "-c", f"truncate -s 0 {_CONTAINER_LOG_PATH}"],
+        stdout=False,
+        stderr=False,
+    )
+
     output_parts: list[str] = []
     started_at = time.time()
 
@@ -231,11 +236,23 @@ def _run_commands_in_background(
         }
 
     for cmd in commands:
-        output_parts.append(f"$ {cmd}")
+        header = f"$ {cmd}"
+        output_parts.append(header)
+
+        # Echo the command itself into the log so the human sees what's running
+        _exec_run(
+            container,
+            ["sh", "-c", f"echo {header!r} >> {_CONTAINER_LOG_PATH}"],
+            stdout=False,
+            stderr=False,
+        )
+
         try:
+            # Run the command, tee-ing stdout+stderr into the log file
+            tee_cmd = f"({cmd}) 2>&1 | tee -a {_CONTAINER_LOG_PATH}"
             exit_code, output = _exec_run(
                 container,
-                ["sh", "-c", cmd],
+                ["sh", "-c", tee_cmd],
                 stdout=True,
                 stderr=True,
                 demux=False,
@@ -245,7 +262,14 @@ def _run_commands_in_background(
             if decoded:
                 output_parts.append(decoded.rstrip("\n"))
             if exit_code != 0:
-                output_parts.append(f"Command exited with code {exit_code}")
+                msg = f"Command exited with code {exit_code}"
+                output_parts.append(msg)
+                _exec_run(
+                    container,
+                    ["sh", "-c", f"echo {msg!r} >> {_CONTAINER_LOG_PATH}"],
+                    stdout=False,
+                    stderr=False,
+                )
                 with _jobs_lock:
                     _jobs[job_id]["output"] = "\n".join(output_parts)
                 break
@@ -358,7 +382,8 @@ def sandbox_exec_background(container_id: str, commands: list[str]) -> str:
     This is the recommended way to run commands that take > 60 seconds.
 
     If the server was started with ``--terminal``, a terminal window is
-    automatically opened showing live output via ``docker logs -f``.
+    automatically opened showing live output via
+    ``docker exec -it <container> tail -f /tmp/mcp.log``.
 
     Args:
         container_id: ID returned by sandbox_initialize
@@ -388,7 +413,7 @@ def sandbox_exec_background(container_id: str, commands: list[str]) -> str:
     _open_terminal_with_logs(container_id)
 
     terminal_note = (
-        "\nA terminal window has been opened showing live output (docker logs -f)."
+        f"\nA terminal window has been opened (tail -f {_CONTAINER_LOG_PATH})."
         if _TERMINAL
         else ""
     )
@@ -602,8 +627,8 @@ def main() -> None:
         default=None,
         help=(
             "Full path to a terminal executable. When set, a new terminal window "
-            "is opened automatically on sandbox_exec_background showing live output "
-            "via 'docker logs -f'. "
+            "is opened automatically on sandbox_exec_background, tailing "
+            "/tmp/mcp.log inside the container via 'docker exec -it ... tail -f'. "
             "Windows example: C:\\Windows\\System32\\cmd.exe  "
             "macOS example: /usr/bin/osascript"
         ),
