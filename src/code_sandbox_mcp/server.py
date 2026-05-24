@@ -55,26 +55,19 @@ logger = logging.getLogger("code-sandbox-mcp")
 # ---------------------------------------------------------------------------
 
 _PASS_THROUGH_KEYS: list[str] = []
-_EXEC_TIMEOUT: int = 300  # Default 5 minutes
-_TERMINAL: str | None = None       # Full path to terminal executable
-_TERMINAL_ARGS: str | None = None  # Argument template; {container_id} is substituted
+_EXEC_TIMEOUT: int = 300
+_TERMINAL: str | None = None
+_TERMINAL_ARGS: str | None = None
 
-# Path inside the container where background job output is streamed
 _CONTAINER_LOG_PATH = "/tmp/mcp.log"
 
 
 def _container_env() -> dict[str, str]:
-    """Return env vars that should be injected into every new container."""
     return {
         key: os.environ[key]
         for key in _PASS_THROUGH_KEYS
         if key in os.environ
     }
-
-
-# ---------------------------------------------------------------------------
-# Docker client helper
-# ---------------------------------------------------------------------------
 
 
 def _docker() -> docker.DockerClient:
@@ -89,7 +82,6 @@ _EXEC_RUN_SUPPORTS_TIMEOUT: bool | None = None
 
 
 def _exec_run(container, cmd: list[str], **kwargs):
-    """Call exec_run with timeout if the SDK supports it, else without."""
     global _EXEC_RUN_SUPPORTS_TIMEOUT
     if _EXEC_RUN_SUPPORTS_TIMEOUT is None:
         try:
@@ -130,44 +122,44 @@ def _exec_run(container, cmd: list[str], **kwargs):
 def _open_terminal_with_logs(container_id: str) -> None:
     """Open a terminal window tailing /tmp/mcp.log inside the container.
 
-    The tail command runs in a retry loop so the window stays open even
-    after the container is removed. A yellow banner is printed when the
-    container disappears, telling the user what happened.
-
-    --terminal : full path to the terminal executable
-    --terminal-args : optional extra args inserted before the tail command.
-                      {container_id} is substituted at runtime.
-                      When omitted, sensible defaults are used per platform.
+    The window stays open after the container stops via Read-Host (Windows)
+    or read (Unix).  ``docker inspect`` is used to detect container removal
+    instead of relying on ``docker exec`` exit codes, which avoids TTY
+    issues that could close the window prematurely.
     """
     if _TERMINAL is None:
         return
 
-    # Tail command with retry: keeps window open after container stops.
-    # PowerShell variant uses a while loop; Unix uses sh + while.
+    short_id = container_id[:12]
+
+    # PowerShell loop: inspect-based liveness check + Read-Host at end
     ps_tail_loop = (
-        f"while ($true) {{ "
-        f"docker exec -it {container_id} tail -f {_CONTAINER_LOG_PATH}; "
-        f"if ($LASTEXITCODE -ne 0) {{ break }}; "
+        f"$cid = '{container_id}'; "
+        f"while (docker inspect $cid 2>$null) {{ "
+        f"docker exec $cid tail -f {_CONTAINER_LOG_PATH} 2>$null; "
         f"Start-Sleep 2 "
         f"}}; "
         f"Write-Host ''; "
-        f"Write-Host '=== Container {container_id[:12]} stopped ===' -ForegroundColor Yellow; "
-        f"Write-Host 'You may close this window.' -ForegroundColor Yellow"
+        f"Write-Host '=== Container {short_id} stopped ===' -ForegroundColor Yellow; "
+        f"Read-Host 'Press Enter to close this window'"
     )
 
+    # Unix loop: while docker inspect succeeds, tail; then read to hold
     unix_tail_loop = (
-        f"while docker exec -it {container_id} tail -f {_CONTAINER_LOG_PATH} 2>/dev/null; "
-        f"do sleep 2; done; "
-        f"echo; echo '=== Container {container_id[:12]} stopped ==='; "
-        f"echo 'You may close this window.'"
+        f"while docker inspect {container_id} >/dev/null 2>&1; "
+        f"do docker exec {container_id} tail -f {_CONTAINER_LOG_PATH} 2>/dev/null; "
+        f"sleep 2; done; "
+        f"echo; echo '=== Container {short_id} stopped ==='; "
+        f"echo 'Press Enter to close this window.'; read"
     )
 
     try:
         if sys.platform == "win32":
             if _TERMINAL_ARGS:
                 extra = _TERMINAL_ARGS.format(container_id=container_id).split()
+                cmd = [_TERMINAL] + extra
                 subprocess.Popen(
-                    [_TERMINAL] + extra,
+                    cmd,
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -223,11 +215,6 @@ def _run_commands_in_background(
     commands: list[str],
     timeout: int,
 ):
-    """Run commands in a background thread, updating job status.
-
-    Each command's output is tee'd to _CONTAINER_LOG_PATH inside the
-    container so a terminal running 'tail -f' can display it in real time.
-    """
     client = _docker()
     try:
         container = client.containers.get(container_id)
@@ -248,7 +235,6 @@ def _run_commands_in_background(
             }
         return
 
-    # Initialise the log file inside the container
     _exec_run(
         container,
         ["sh", "-c", f"truncate -s 0 {_CONTAINER_LOG_PATH}"],
