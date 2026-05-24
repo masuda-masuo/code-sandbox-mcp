@@ -62,13 +62,6 @@ _TERMINAL_ARGS: str | None = None  # Argument template; {container_id} is substi
 # Path inside the container where background job output is streamed
 _CONTAINER_LOG_PATH = "/tmp/mcp.log"
 
-# Default terminal args per platform, used when --terminal-args is not specified
-_DEFAULT_TERMINAL_ARGS: dict[str, str] = {
-    "win32": "-NoExit -Command \"docker exec -it {container_id} tail -f /tmp/mcp.log\"",
-    "darwin": "",   # handled separately via osascript
-    "linux": "-e docker exec -it {container_id} tail -f /tmp/mcp.log",
-}
-
 
 def _container_env() -> dict[str, str]:
     """Return env vars that should be injected into every new container."""
@@ -138,17 +131,18 @@ def _open_terminal_with_logs(container_id: str) -> None:
     """Open a terminal window tailing /tmp/mcp.log inside the container.
 
     --terminal : full path to the terminal executable
-    --terminal-args : argument template where {container_id} is substituted.
-                      Defaults to PowerShell-compatible args on Windows,
-                      osascript on macOS, and -e on Linux.
+    --terminal-args : optional extra args inserted before the tail command.
+                      {container_id} is substituted at runtime.
+                      When omitted the defaults below are used.
 
-    Windows example (PowerShell):
-        --terminal "C:\\path\\to\\pwsh.exe"
-        --terminal-args "-NoExit -Command \\"docker exec -it {container_id} tail -f /tmp/mcp.log\\""
+    Windows default (PowerShell):
+        powershell.exe -NoExit -Command "docker exec -it <id> tail -f /tmp/mcp.log"
 
-    macOS example:
-        --terminal "/usr/bin/osascript"
-        (--terminal-args not required; AppleScript is used automatically)
+    macOS default:
+        osascript -e 'tell application "Terminal" ...'
+
+    Linux default:
+        <terminal> -e "docker exec -it <id> tail -f /tmp/mcp.log"
     """
     if _TERMINAL is None:
         return
@@ -157,9 +151,17 @@ def _open_terminal_with_logs(container_id: str) -> None:
 
     try:
         if sys.platform == "win32":
-            args_template = _TERMINAL_ARGS or _DEFAULT_TERMINAL_ARGS["win32"]
-            args_str = args_template.format(container_id=container_id)
-            cmd = [_TERMINAL] + shlex.split(args_str)
+            if _TERMINAL_ARGS:
+                # User supplied custom args: substitute and split on spaces.
+                # Each token is passed as a separate list element so Windows
+                # does not re-quote them via the shell.
+                extra = _TERMINAL_ARGS.format(container_id=container_id).split()
+                cmd = [_TERMINAL] + extra
+            else:
+                # Default: PowerShell -NoExit -Command "<tail_cmd>"
+                # Pass -Command and its value as two separate list elements so
+                # subprocess never runs a shell and the quoting stays intact.
+                cmd = [_TERMINAL, "-NoExit", "-Command", tail_cmd]
             subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
@@ -181,9 +183,12 @@ def _open_terminal_with_logs(container_id: str) -> None:
                 stderr=subprocess.DEVNULL,
             )
         else:
-            args_template = _TERMINAL_ARGS or _DEFAULT_TERMINAL_ARGS["linux"]
-            args_str = args_template.format(container_id=container_id)
-            cmd = [_TERMINAL] + shlex.split(args_str)
+            # Generic Linux terminal emulator
+            if _TERMINAL_ARGS:
+                extra = shlex.split(_TERMINAL_ARGS.format(container_id=container_id))
+                cmd = [_TERMINAL] + extra
+            else:
+                cmd = [_TERMINAL, "-e", tail_cmd]
             subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
@@ -647,7 +652,7 @@ def main() -> None:
             "Full path to a terminal executable. When set, a new terminal window "
             "is opened automatically on sandbox_exec_background, tailing "
             "/tmp/mcp.log inside the container. "
-            "Windows/PowerShell example: C:\\path\\to\\pwsh.exe  "
+            "Windows example: C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe  "
             "macOS example: /usr/bin/osascript"
         ),
     )
@@ -656,10 +661,10 @@ def main() -> None:
         metavar="ARGS",
         default=None,
         help=(
-            "Argument template passed to --terminal. "
+            "Optional extra arguments passed to --terminal before the tail command. "
             "{container_id} is substituted at runtime. "
-            "Defaults to PowerShell-compatible args on Windows. "
-            "Example: \"-NoExit -Command \\\"docker exec -it {container_id} tail -f /tmp/mcp.log\\\"\""
+            "When omitted, sensible defaults are used per platform. "
+            "Windows/PowerShell default: -NoExit -Command <tail_cmd>"
         ),
     )
     args, remaining = parser.parse_known_args()
