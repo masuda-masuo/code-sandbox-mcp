@@ -5,10 +5,10 @@ Inspired by Automata-Labs-team/code-sandbox-mcp.
 from __future__ import annotations
 
 import argparse
-import os
 import io
+import os
+import sys
 import tarfile
-import tempfile
 from pathlib import Path
 
 import docker
@@ -16,30 +16,10 @@ from docker.errors import APIError, NotFound
 from fastmcp import FastMCP
 
 # ---------------------------------------------------------------------------
-# Argument parsing (runs at import time so FastMCP can start cleanly)
+# Pass-through env keys (populated in main() before mcp.run())
 # ---------------------------------------------------------------------------
 
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="code-sandbox-mcp: Docker sandbox MCP server"
-    )
-    parser.add_argument(
-        "--pass-through-env",
-        metavar="VAR1,VAR2,...",
-        default="",
-        help="Comma-separated list of environment variable names to pass into containers",
-    )
-    # fastmcp may add its own flags; use parse_known_args to avoid conflicts
-    args, _ = parser.parse_known_args()
-    return args
-
-
-_args = _parse_args()
-
-# Build the set of env var names to pass through
-_PASS_THROUGH_KEYS: list[str] = [
-    k.strip() for k in _args.pass_through_env.split(",") if k.strip()
-]
+_PASS_THROUGH_KEYS: list[str] = []
 
 
 def _container_env() -> dict[str, str]:
@@ -254,6 +234,26 @@ def copy_file(
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    # Parse our own args before fastmcp sees sys.argv
+    parser = argparse.ArgumentParser(
+        description="code-sandbox-mcp: Docker sandbox MCP server",
+        add_help=True,
+    )
+    parser.add_argument(
+        "--pass-through-env",
+        metavar="VAR1,VAR2,...",
+        default="",
+        help="Comma-separated list of environment variable names to pass into containers",
+    )
+    args, remaining = parser.parse_known_args()
+
+    # Populate pass-through keys
+    global _PASS_THROUGH_KEYS
+    _PASS_THROUGH_KEYS = [k.strip() for k in args.pass_through_env.split(",") if k.strip()]
+
+    # Replace sys.argv with only what fastmcp should see
+    sys.argv = [sys.argv[0]] + remaining
+
     mcp.run()
 
 
