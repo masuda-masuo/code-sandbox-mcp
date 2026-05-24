@@ -95,6 +95,64 @@ Default command execution timeout is 300 seconds. Override with `--exec-timeout`
 "args": ["--pass-through-env", "GITHUB_TOKEN", "--exec-timeout", "600"]
 ```
 
+## Terminal auto-open (optional)
+
+When `--terminal` is set, a terminal window opens automatically every time `sandbox_exec_background` is called, tailing `/tmp/mcp.log` inside the container so you can watch command output in real time.
+
+### How it works
+
+- Each command's stdout/stderr is tee'd to `/tmp/mcp.log` inside the container.
+- A new terminal window runs `docker exec <container_id> tail -f /tmp/mcp.log`.
+- On Windows, the terminal is launched via `cmd /c start` so it runs as an independent process — it stays open even after the MCP server exits.
+- When the container stops, `tail -f` exits and a banner is printed. The window stays open (`-NoExit` + `Read-Host`) so you can review the output before closing manually.
+
+### Windows configuration
+
+```json
+{
+  "mcpServers": {
+    "code-sandbox-mcp": {
+      "command": "<output of where.exe code-sandbox-mcp>",
+      "args": [
+        "--pass-through-env", "GITHUB_TOKEN",
+        "--terminal", "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+      ],
+      "env": {
+        "GITHUB_TOKEN": "github_pat_xxxx"
+      }
+    }
+  }
+}
+```
+
+### macOS configuration (experimental)
+
+```json
+"args": [
+  "--pass-through-env", "GITHUB_TOKEN",
+  "--terminal", "/usr/bin/osascript"
+]
+```
+
+### Linux configuration (experimental)
+
+```json
+"args": [
+  "--pass-through-env", "GITHUB_TOKEN",
+  "--terminal", "/usr/bin/gnome-terminal"
+]
+```
+
+> **Note**: The `--terminal` option has been verified on **Windows only**. macOS and Linux support is implemented but untested. Behavior may differ depending on the terminal emulator and system configuration.
+
+### Custom terminal args
+
+Use `--terminal-args` to pass custom arguments to the terminal. `{container_id}` is substituted at runtime:
+
+```json
+"--terminal-args", "-NoExit -Command docker exec {container_id} tail -f /tmp/mcp.log"
+```
+
 ## Docker images
 
 `sandbox_initialize` requires a Docker image to be available locally. If the image is not present, the tool will return an error. Pull the image manually before use:
@@ -126,7 +184,7 @@ Any image available on [Docker Hub](https://hub.docker.com) can be used. Pull it
 |------|-------------|
 | `sandbox_initialize` | Start a container, returns `container_id` |
 | `sandbox_exec` | Run commands inside the container (synchronous) |
-| `sandbox_exec_background` | Start commands in background, returns `job_id` |
+| `sandbox_exec_background` | Start commands in background, returns `job_id`. Opens a terminal window automatically if `--terminal` is set. |
 | `sandbox_exec_check` | Poll background job status and retrieve output |
 | `sandbox_stop` | Stop and remove the container |
 | `write_file_sandbox` | Write a file into the container |
