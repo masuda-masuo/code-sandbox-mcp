@@ -20,7 +20,7 @@ from fastmcp import FastMCP
 # ---------------------------------------------------------------------------
 
 _PASS_THROUGH_KEYS: list[str] = []
-
+_EXEC_TIMEOUT: int = 300  # Default 5 minutes
 
 def _container_env() -> dict[str, str]:
     """Return env vars that should be injected into every new container."""
@@ -84,21 +84,28 @@ def sandbox_exec(container_id: str, commands: list[str]) -> str:
         container = client.containers.get(container_id)
     except NotFound:
         return f"Error: container {container_id[:12]} not found"
+    except Exception as e:
+        return f"Error: failed to get container {container_id[:12]}: {e}"
 
     output_parts: list[str] = []
     for cmd in commands:
         output_parts.append(f"$ {cmd}")
-        exit_code, output = container.exec_run(
-            ["sh", "-c", cmd],
-            stdout=True,
-            stderr=True,
-            demux=False,
-        )
-        decoded = output.decode("utf-8", errors="replace") if output else ""
-        if decoded:
-            output_parts.append(decoded.rstrip("\n"))
-        if exit_code != 0:
-            output_parts.append(f"Command exited with code {exit_code}")
+        try:
+            exit_code, output = container.exec_run(
+                ["sh", "-c", cmd],
+                stdout=True,
+                stderr=True,
+                demux=False,
+                timeout=_EXEC_TIMEOUT,
+            )
+            decoded = output.decode("utf-8", errors="replace") if output else ""
+            if decoded:
+                output_parts.append(decoded.rstrip("\n"))
+            if exit_code != 0:
+                output_parts.append(f"Command exited with code {exit_code}")
+                break
+        except Exception as e:
+            output_parts.append(f"Error executing command: {e}")
             break
 
     return "\n".join(output_parts)
@@ -121,6 +128,8 @@ def sandbox_stop(container_id: str) -> str:
         return f"Container {container_id[:12]} not found (already removed?)"
     except APIError as e:
         return f"Error: {e}"
+    except Exception as e:
+        return f"Error: unexpected error while stopping container: {e}"
 
 
 @mcp.tool()
@@ -143,6 +152,8 @@ def write_file_sandbox(
         container = client.containers.get(container_id)
     except NotFound:
         return f"Error: container {container_id[:12]} not found"
+    except Exception as e:
+        return f"Error: failed to get container {container_id[:12]}: {e}"
 
     encoded = file_contents.encode("utf-8")
     buf = io.BytesIO()
@@ -157,6 +168,8 @@ def write_file_sandbox(
         return f"Written {file_name} to {dest_dir} in container {container_id[:12]}"
     except APIError as e:
         return f"Error: {e}"
+    except Exception as e:
+        return f"Error: unexpected error while writing file: {e}"
 
 
 @mcp.tool()
@@ -177,6 +190,8 @@ def copy_project(
         container = client.containers.get(container_id)
     except NotFound:
         return f"Error: container {container_id[:12]} not found"
+    except Exception as e:
+        return f"Error: failed to get container {container_id[:12]}: {e}"
 
     src = Path(local_src_dir)
     if not src.is_dir():
@@ -192,6 +207,8 @@ def copy_project(
         return f"Copied {local_src_dir} to {dest_dir}/{src.name} in container {container_id[:12]}"
     except APIError as e:
         return f"Error: {e}"
+    except Exception as e:
+        return f"Error: unexpected error while copying project: {e}"
 
 
 @mcp.tool()
@@ -212,6 +229,8 @@ def copy_file(
         container = client.containers.get(container_id)
     except NotFound:
         return f"Error: container {container_id[:12]} not found"
+    except Exception as e:
+        return f"Error: failed to get container {container_id[:12]}: {e}"
 
     src = Path(local_src_file)
     if not src.is_file():
@@ -227,6 +246,8 @@ def copy_file(
         return f"Copied {src.name} to {dest_path} in container {container_id[:12]}"
     except APIError as e:
         return f"Error: {e}"
+    except Exception as e:
+        return f"Error: unexpected error while copying file: {e}"
 
 
 # ---------------------------------------------------------------------------
@@ -245,11 +266,18 @@ def main() -> None:
         default="",
         help="Comma-separated list of environment variable names to pass into containers",
     )
+    parser.add_argument(
+        "--exec-timeout",
+        type=int,
+        default=300,
+        help="Timeout for command execution in seconds (default: 300)",
+    )
     args, remaining = parser.parse_known_args()
 
     # Populate pass-through keys
-    global _PASS_THROUGH_KEYS
+    global _PASS_THROUGH_KEYS, _EXEC_TIMEOUT
     _PASS_THROUGH_KEYS = [k.strip() for k in args.pass_through_env.split(",") if k.strip()]
+    _EXEC_TIMEOUT = args.exec_timeout
 
     # Replace sys.argv with only what fastmcp should see
     sys.argv = [sys.argv[0]] + remaining
