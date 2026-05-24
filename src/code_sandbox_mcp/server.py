@@ -9,6 +9,8 @@ import inspect
 import io
 import logging
 import os
+import platform
+import subprocess
 import sys
 import tarfile
 import threading
@@ -54,6 +56,7 @@ logger = logging.getLogger("code-sandbox-mcp")
 
 _PASS_THROUGH_KEYS: list[str] = []
 _EXEC_TIMEOUT: int = 300  # Default 5 minutes
+_TERMINAL: str | None = None  # Terminal command for auto-open feature
 
 
 def _container_env() -> dict[str, str]:
@@ -114,6 +117,50 @@ def _exec_run(container, cmd: list[str], **kwargs):
     if timeout is not None and _EXEC_RUN_SUPPORTS_TIMEOUT:
         kwargs["timeout"] = timeout
     return container.exec_run(cmd, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Terminal auto-open helper
+# ---------------------------------------------------------------------------
+
+
+def _open_terminal_with_logs(container_id: str) -> None:
+    """Open a terminal window running 'docker logs -f <container_id>'.
+
+    Behaviour depends on _TERMINAL:
+      - None          : do nothing
+      - "wt.exe"      : Windows Terminal
+      - "osascript"   : macOS Terminal.app via AppleScript
+      - other         : treated as a generic terminal emulator that accepts
+                        -e <command> (e.g. gnome-terminal, xterm)
+    """
+    if _TERMINAL is None:
+        return
+
+    log_cmd = f"docker logs -f {container_id}"
+
+    try:
+        if _TERMINAL == "wt.exe":
+            # Windows Terminal: open a new tab running the command, then keep
+            # the shell alive so the window doesn't close immediately.
+            subprocess.Popen(
+                ["wt.exe", "new-tab", "--", "cmd.exe", "/k", log_cmd],
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+            )
+        elif _TERMINAL == "osascript":
+            # macOS: open Terminal.app and run the command
+            script = (
+                f'tell application "Terminal"\n'
+                f'  activate\n'
+                f'  do script "{log_cmd}"\n'
+                f'end tell'
+            )
+            subprocess.Popen(["osascript", "-e", script])
+        else:
+            # Generic terminal emulator (e.g. gnome-terminal, xterm, konsole)
+            subprocess.Popen([_TERMINAL, "-e", log_cmd])
+    except Exception as e:
+        logger.warning("Failed to open terminal (%s): %s", _TERMINAL, e)
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +337,9 @@ def sandbox_exec_background(container_id: str, commands: list[str]) -> str:
     Use ``sandbox_exec_check`` to poll for completion and retrieve output.
     This is the recommended way to run commands that take > 60 seconds.
 
+    If the server was started with ``--terminal``, a terminal window is
+    automatically opened showing live output via ``docker logs -f``.
+
     Args:
         container_id: ID returned by sandbox_initialize
         commands: List of shell commands to run in order
@@ -314,9 +364,18 @@ def sandbox_exec_background(container_id: str, commands: list[str]) -> str:
     )
     t.start()
 
+    # Open a terminal window for real-time log tailing if configured
+    _open_terminal_with_logs(container_id)
+
+    terminal_note = (
+        f"\nA terminal window has been opened showing live output (docker logs -f)."
+        if _TERMINAL
+        else ""
+    )
+
     return (
         f"Job started: {job_id}\n"
-        f"Check status with: sandbox_exec_check(container_id=\"{container_id[:12]}\", job_id=\"{job_id}\")"
+        f"Check status with: sandbox_exec_check(container_id=\"{container_id[:12]}\", job_id=\"{job_id}\"){terminal_note}"
     )
 
 
@@ -517,11 +576,22 @@ def main() -> None:
         default=300,
         help="Timeout for command execution in seconds (default: 300)",
     )
+    parser.add_argument(
+        "--terminal",
+        metavar="TERMINAL",
+        default=None,
+        help=(
+            "Terminal emulator to open for live log tailing when sandbox_exec_background is called. "
+            "Use 'wt.exe' for Windows Terminal, 'osascript' for macOS Terminal.app, "
+            "or any terminal emulator that accepts '-e <command>' (e.g. gnome-terminal, xterm)."
+        ),
+    )
     args, remaining = parser.parse_known_args()
 
-    global _PASS_THROUGH_KEYS, _EXEC_TIMEOUT
+    global _PASS_THROUGH_KEYS, _EXEC_TIMEOUT, _TERMINAL
     _PASS_THROUGH_KEYS = [k.strip() for k in args.pass_through_env.split(",") if k.strip()]
     _EXEC_TIMEOUT = args.exec_timeout
+    _TERMINAL = args.terminal
 
     sys.argv = [sys.argv[0]] + remaining
 
