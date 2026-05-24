@@ -5,10 +5,12 @@ Inspired by Automata-Labs-team/code-sandbox-mcp.
 from __future__ import annotations
 
 import argparse
+import inspect
 import io
 import os
 import sys
 import tarfile
+import threading
 from pathlib import Path
 
 import docker
@@ -21,6 +23,7 @@ from fastmcp import FastMCP
 
 _PASS_THROUGH_KEYS: list[str] = []
 _EXEC_TIMEOUT: int = 300  # Default 5 minutes
+
 
 def _container_env() -> dict[str, str]:
     """Return env vars that should be injected into every new container."""
@@ -35,8 +38,58 @@ def _container_env() -> dict[str, str]:
 # Docker client helper
 # ---------------------------------------------------------------------------
 
+
 def _docker() -> docker.DockerClient:
     return docker.from_env()
+
+
+# ---------------------------------------------------------------------------
+# Cross-version exec_run helper
+# ---------------------------------------------------------------------------
+
+_EXEC_RUN_SUPPORTS_TIMEOUT: bool | None = None
+
+
+def _exec_run(container, cmd: list[str], **kwargs):
+    """Call exec_run with timeout if the SDK supports it, else without.
+
+    Older docker-py versions do not accept a 'timeout' keyword argument.
+    We detect support lazily via inspect.signature.
+    """
+    global _EXEC_RUN_SUPPORTS_TIMEOUT
+    if _EXEC_RUN_SUPPORTS_TIMEOUT is None:
+        try:
+            sig = inspect.signature(container.exec_run)
+            _EXEC_RUN_SUPPORTS_TIMEOUT = "timeout" in sig.parameters
+        except (ValueError, TypeError):
+            _EXEC_RUN_SUPPORTS_TIMEOUT = False
+
+    timeout = kwargs.pop("timeout", None)
+    if timeout is not None and not _EXEC_RUN_SUPPORTS_TIMEOUT:
+        # SDK doesn't support timeout – use threading-based fallback
+        result: list[tuple[int, bytes] | Exception] = []
+
+        def _run():
+            try:
+                ec, out = container.exec_run(cmd, **kwargs)
+                result.append((ec, out))
+            except Exception as e:
+                result.append(e)
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        t.join(timeout)
+        if t.is_alive():
+            raise TimeoutError(
+                f"Command timed out after {timeout} seconds"
+            )
+        if isinstance(result[0], Exception):
+            raise result[0]
+        return result[0]
+
+    if timeout is not None and _EXEC_RUN_SUPPORTS_TIMEOUT:
+        kwargs["timeout"] = timeout
+    return container.exec_run(cmd, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +144,8 @@ def sandbox_exec(container_id: str, commands: list[str]) -> str:
     for cmd in commands:
         output_parts.append(f"$ {cmd}")
         try:
-            exit_code, output = container.exec_run(
+            exit_code, output = _exec_run(
+                container,
                 ["sh", "-c", cmd],
                 stdout=True,
                 stderr=True,
@@ -104,6 +158,9 @@ def sandbox_exec(container_id: str, commands: list[str]) -> str:
             if exit_code != 0:
                 output_parts.append(f"Command exited with code {exit_code}")
                 break
+        except TimeoutError as e:
+            output_parts.append(f"Error: {e}")
+            break
         except Exception as e:
             output_parts.append(f"Error executing command: {e}")
             break
@@ -253,6 +310,7 @@ def copy_file(
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     # Parse our own args before fastmcp sees sys.argv
