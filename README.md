@@ -51,11 +51,13 @@ After updating, restart Claude Desktop to load the new version.
 
 ### claude_desktop_config.json
 
+Use `where.exe code-sandbox-mcp` (Windows) or `which code-sandbox-mcp` (Mac/Linux) to find the executable path, then set it as `command`:
+
 ```json
 {
   "mcpServers": {
     "code-sandbox-mcp": {
-      "command": "C:\\Users\\User\\AppData\\Local\\Programs\\Python\\Python312\\Scripts\\code-sandbox-mcp.exe",
+      "command": "<output of where.exe code-sandbox-mcp>",
       "args": [
         "--pass-through-env", "GITHUB_TOKEN"
       ],
@@ -92,6 +94,31 @@ Default command execution timeout is 300 seconds. Override with `--exec-timeout`
 ```json
 "args": ["--pass-through-env", "GITHUB_TOKEN", "--exec-timeout", "600"]
 ```
+
+## Docker images
+
+`sandbox_initialize` requires a Docker image to be available locally. If the image is not present, the tool will return an error. Pull the image manually before use:
+
+```powershell
+docker pull python:3.12-slim-bookworm
+```
+
+### Default image
+
+| Image | Description |
+|-------|-------------|
+| `python:3.12-slim-bookworm` | Default. Debian 12 slim, Python 3.12. Suitable for most Python projects. |
+
+### Other options
+
+| Image | Use case |
+|-------|----------|
+| `python:3.11-slim-bookworm` | Projects requiring Python 3.11 |
+| `python:3.12-bookworm` | Full Debian image (larger, includes more system packages) |
+| `ubuntu:24.04` | General-purpose Linux environment |
+| `node:20-slim` | Node.js projects |
+
+Any image available on [Docker Hub](https://hub.docker.com) can be used. Pull it first with `docker pull <image>`.
 
 ## Available tools
 
@@ -141,6 +168,10 @@ sandbox_exec(container_id, ["ls /app"])
 ## Typical workflow (pytest example)
 
 ```
+# 1. Pull the image first (one-time setup)
+docker pull python:3.12-slim-bookworm
+
+# 2. Run the workflow
 sandbox_initialize(image="python:3.12-slim-bookworm")
   → container_id
 
