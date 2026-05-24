@@ -136,7 +136,9 @@ def _open_terminal_with_logs(container_id: str) -> None:
                       When omitted the defaults below are used.
 
     Windows default (PowerShell):
-        powershell.exe -NoExit -Command "docker exec -it <id> tail -f /tmp/mcp.log"
+        Uses Start-Process to open a new PowerShell window with -NoExit
+        and the tail command. This avoids conhost.exe/CMD being used as
+        the window host when CREATE_NEW_CONSOLE is passed directly.
 
     macOS default:
         osascript -e 'tell application "Terminal" ...'
@@ -157,18 +159,27 @@ def _open_terminal_with_logs(container_id: str) -> None:
                 # does not re-quote them via the shell.
                 extra = _TERMINAL_ARGS.format(container_id=container_id).split()
                 cmd = [_TERMINAL] + extra
+                subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=subprocess.CREATE_NEW_CONSOLE,
+                )
             else:
-                # Default: PowerShell -NoExit -Command "<tail_cmd>"
-                # Pass -Command and its value as two separate list elements so
-                # subprocess never runs a shell and the quoting stays intact.
-                cmd = [_TERMINAL, "-NoExit", "-Command", tail_cmd]
-            subprocess.Popen(
-                cmd,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=subprocess.CREATE_NEW_CONSOLE,
-            )
+                # Use Start-Process so Windows opens a proper PowerShell window
+                # rather than a CMD/conhost window hosting powershell.exe.
+                # The ArgumentList is passed as an array to avoid quoting issues.
+                ps_cmd = (
+                    f"Start-Process powershell -ArgumentList "
+                    f"'-NoExit', '-Command', '{tail_cmd}'"
+                )
+                subprocess.Popen(
+                    [_TERMINAL, "-Command", ps_cmd],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
         elif _TERMINAL.endswith("osascript"):
             script = (
                 'tell application "Terminal"\n'
@@ -664,7 +675,7 @@ def main() -> None:
             "Optional extra arguments passed to --terminal before the tail command. "
             "{container_id} is substituted at runtime. "
             "When omitted, sensible defaults are used per platform. "
-            "Windows/PowerShell default: -NoExit -Command <tail_cmd>"
+            "Windows/PowerShell default: Start-Process powershell with -NoExit -Command <tail_cmd>"
         ),
     )
     args, remaining = parser.parse_known_args()
