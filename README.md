@@ -40,13 +40,6 @@ Install directly with pip:
 pip install git+https://github.com/masuda-masuo/code-sandbox-mcp
 ```
 
-Then find the installed executable path:
-
-```powershell
-where.exe code-sandbox-mcp   # Windows
-which code-sandbox-mcp       # Mac/Linux
-```
-
 ### Uninstall
 
 ```powershell
@@ -59,24 +52,33 @@ pip uninstall code-sandbox-mcp
 pip install --force-reinstall git+https://github.com/masuda-masuo/code-sandbox-mcp
 ```
 
+Or ask Claude directly (launcher mode only):
+
+```
+sandbox_update_start()
+sandbox_update_check(job_id="...")  # repeat until "Status: done"
+```
+
 ### Update to a specific commit
 
 ```powershell
 pip install --force-reinstall git+https://github.com/masuda-masuo/code-sandbox-mcp@<commit-hash>
 ```
 
-After updating, restart Claude Desktop to load the new version.
-
 ### claude_desktop_config.json
 
-Use `where.exe code-sandbox-mcp` (Windows) or `which code-sandbox-mcp` (Mac/Linux) to find the executable path, then set it as `command`:
+#### Recommended: launcher mode (supports in-place updates)
+
+Use `(Get-Command python).Source` (Windows PowerShell) or `which python` (Mac/Linux) to find the Python executable path.
 
 ```json
 {
   "mcpServers": {
     "code-sandbox-mcp": {
-      "command": "<output of where.exe code-sandbox-mcp>",
+      "command": "C:\\Users\\User\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
       "args": [
+        "-m", "code_sandbox_mcp.launcher",
+        "--update-spec", "git+https://github.com/masuda-masuo/code-sandbox-mcp",
         "--pass-through-env", "GITHUB_TOKEN"
       ],
       "env": {
@@ -87,19 +89,51 @@ Use `where.exe code-sandbox-mcp` (Windows) or `which code-sandbox-mcp` (Mac/Linu
 }
 ```
 
-> **Note**: `uvx --from git+https://...` is not recommended. uvx does not cache git-sourced packages and attempts to fetch from GitHub on every Claude Desktop startup, causing connection failures. Use `pip install` and specify the full executable path instead.
+In launcher mode, `sandbox_update_start()` / `sandbox_update_check()` allow Claude to update the server without restarting Claude Desktop.
+
+#### Simple mode (no in-place update)
+
+```json
+{
+  "mcpServers": {
+    "code-sandbox-mcp": {
+      "command": "C:\\Users\\User\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+      "args": [
+        "-m", "code_sandbox_mcp.server",
+        "--pass-through-env", "GITHUB_TOKEN"
+      ],
+      "env": {
+        "GITHUB_TOKEN": "github_pat_xxxx"
+      }
+    }
+  }
+}
+```
+
+> **Note**: `uvx --from git+https://...` is not recommended. uvx does not cache git-sourced packages and attempts to fetch from GitHub on every Claude Desktop startup, causing connection failures. Use `pip install` and specify the Python executable path instead.
 
 `--pass-through-env` accepts a comma-separated list of variable names:
 
-```
+```json
 "--pass-through-env", "GITHUB_TOKEN,SLACK_TOKEN"
 ```
 
 Only the listed variables are forwarded. Variables not listed are never injected into containers.
 
-### Version pinning (recommended for stability)
+### Optional terminal window (live logs)
 
-To avoid picking up unintended changes, pin to a specific commit:
+Add `--terminal` to open a PowerShell/terminal window that tails container logs in real time:
+
+```json
+"args": [
+  "-m", "code_sandbox_mcp.launcher",
+  "--update-spec", "git+https://github.com/masuda-masuo/code-sandbox-mcp",
+  "--pass-through-env", "GITHUB_TOKEN",
+  "--terminal", "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+]
+```
+
+### Version pinning (recommended for stability)
 
 ```powershell
 pip install git+https://github.com/masuda-masuo/code-sandbox-mcp@<commit-hash>
@@ -111,6 +145,19 @@ Default command execution timeout is 300 seconds. Override with `--exec-timeout`
 
 ```json
 "args": ["--pass-through-env", "GITHUB_TOKEN", "--exec-timeout", "600"]
+```
+## Launcher architecture
+
+```
+Claude Desktop
+    └─ launcher  ← Claude holds this (lightweight, stays alive)
+           └─ server  ← actual MCP server (child process)
+```
+
+The launcher proxies stdio between Claude Desktop and the server. When `sandbox_update_start()` succeeds, the server exits with a restart signal (exit code 42) and the launcher restarts it automatically — without requiring a Claude Desktop restart.
+
+## In-place update (launcher mode only)
+
 ```
 
 ## Terminal auto-open (optional)
@@ -208,6 +255,8 @@ Any image available on [Docker Hub](https://hub.docker.com) can be used. Pull it
 | `write_file_sandbox` | Write a file into the container |
 | `copy_project` | Copy a local directory into the container |
 | `copy_file` | Copy a single local file into the container |
+| `sandbox_update_start` | Start an in-place server update, returns `job_id` (launcher mode only) |
+| `sandbox_update_check` | Poll update status |
 
 ## When to use background execution
 
@@ -219,7 +268,6 @@ MCP clients (including Claude Desktop) have a request timeout of ~60 seconds. Co
 sandbox_initialize(image="python:3.12-slim-bookworm")
   → container_id
 
-# Heavy operations: use background execution
 sandbox_exec_background(container_id, [
   "apt-get update -qq && apt-get install -y -qq git",
   "git clone https://user:$GITHUB_TOKEN@github.com/org/repo.git /app",
@@ -228,7 +276,7 @@ sandbox_exec_background(container_id, [
 ])
   → job_id
 
-# Poll until done
+# Poll until done (PowerShell terminal window shows live logs if --terminal is set)
 sandbox_exec_check(container_id, job_id)  # repeat until "Status: done"
 
 sandbox_stop(container_id)
@@ -259,7 +307,8 @@ sandbox_exec_background(container_id, [
 ])
   → job_id
 
-# Poll every 30 seconds until "Status: done"
+# PowerShell shows live output if --terminal is configured
+# Tell Claude when done; Claude will call sandbox_exec_check to retrieve results
 sandbox_exec_check(container_id, job_id)
 
 sandbox_stop(container_id)
@@ -268,7 +317,7 @@ sandbox_stop(container_id)
 ## Known limitations
 
 - **Job dictionary grows unbounded**: Completed job results are kept in memory indefinitely for the lifetime of the server process. In typical development use (short-lived server sessions) this is not a problem, but long-running server instances will accumulate memory over time.
-- **Background jobs are lost on server restart**: Job state is in-process memory only. If the MCP server restarts, all job IDs become invalid.
+- **Background jobs are lost on server restart**: Job state is in-process memory only. If the MCP server restarts (e.g. after `sandbox_update_start()`), all job IDs become invalid.
 - **MCP is synchronous by design**: The background execution pattern is an application-level workaround for the MCP 60-second timeout, not a native async feature of the protocol.
 
 ## License
