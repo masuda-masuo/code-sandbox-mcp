@@ -528,7 +528,14 @@ def sandbox_exec_background(
 def sandbox_exec_check(
     container_id: str,
     job_id: str,
+    wait_seconds: int = 10,
 ) -> str:
+    """Poll the status of a background exec job.
+
+    Sleeps for *wait_seconds* before returning so the caller does not
+    need to implement its own delay between polls (default: 10s).
+    """
+    time.sleep(wait_seconds)
     with _jobs_lock:
         job = _jobs.get(job_id)
     if job is None:
@@ -574,8 +581,15 @@ def sandbox_update_start() -> str:
 
 
 @mcp.tool()
-def sandbox_update_check(job_id: str) -> str:
+def sandbox_update_check(
+    job_id: str,
+    wait_seconds: int = 30,
+) -> str:
     """Poll the status of an update job.
+
+    Sleeps for *wait_seconds* before returning so the caller does not
+    need to implement its own delay between polls (default: 30s,
+    reflecting the typical duration of a pip install from GitHub).
 
     Returns one of:
 
@@ -584,6 +598,7 @@ def sandbox_update_check(job_id: str) -> str:
     * ``Status: error\\nError: <message>``
     * ``Error: job {job_id} not found``
     """
+    time.sleep(wait_seconds)
     with _jobs_lock:
         job = _jobs.get(job_id)
     if job is None:
