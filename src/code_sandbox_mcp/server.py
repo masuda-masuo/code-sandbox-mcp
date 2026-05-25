@@ -81,6 +81,10 @@ def _docker() -> docker.DockerClient:
 _EXEC_RUN_SUPPORTS_TIMEOUT: bool | None = None
 
 
+class _ContainerExecError(Exception):
+    """Raised when a container exec operation fails."""
+
+
 def _exec_run(container, cmd: list[str], **kwargs):
     global _EXEC_RUN_SUPPORTS_TIMEOUT
     if _EXEC_RUN_SUPPORTS_TIMEOUT is None:
@@ -118,6 +122,7 @@ def _exec_run(container, cmd: list[str], **kwargs):
 # ---------------------------------------------------------------------------
 # Terminal auto-open helper
 # ---------------------------------------------------------------------------
+
 
 def _open_terminal_with_logs(container_id: str) -> None:
     """Open a terminal window tailing /tmp/mcp.log inside the container.
@@ -281,6 +286,80 @@ def _run_commands_in_background(
 
 
 # ---------------------------------------------------------------------------
+# Update state
+# ---------------------------------------------------------------------------
+
+#: Pip install specifier for ``sandbox_update_start()``.
+#: Defaults to reinstalling from the local working tree.
+_UPDATE_SPEC: str = "."
+
+#: When True, ``sandbox_update_start()`` is called automatically on server start.
+_UPDATE_AUTO: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Background update helper
+# ---------------------------------------------------------------------------
+
+_RESTART_SENTINEL = 42
+"""Exit code used to signal the launcher to restart the server."""
+
+
+def _run_update_background(job_id: str) -> None:
+    """Run pip install --force-reinstall in a background thread.
+
+    On success, sets job status to ``done`` and exits the process with
+    code 42 (restart signal).  On failure, sets job status to ``error``.
+    """
+    started_at = time.time()
+
+    with _jobs_lock:
+        _jobs[job_id] = {
+            "status": "running",
+            "started_at": started_at,
+        }
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--force-reinstall", _UPDATE_SPEC],
+            capture_output=True,
+            text=True,
+        )
+        finished_at = time.time()
+
+        if result.returncode == 0:
+            with _jobs_lock:
+                _jobs[job_id].update(
+                    status="done",
+                    finished_at=finished_at,
+                    elapsed=finished_at - started_at,
+                    output=result.stdout,
+                )
+            # Give Claude a brief window to poll before exiting
+            time.sleep(2)
+            sys.exit(_RESTART_SENTINEL)
+        else:
+            error_msg = result.stderr or result.stdout or f"pip exited with code {result.returncode}"
+            with _jobs_lock:
+                _jobs[job_id].update(
+                    status="error",
+                    finished_at=finished_at,
+                    elapsed=finished_at - started_at,
+                    error=error_msg,
+                    output=result.stdout + "\n" + result.stderr,
+                )
+    except Exception as e:
+        finished_at = time.time()
+        with _jobs_lock:
+            _jobs[job_id].update(
+                status="error",
+                finished_at=finished_at,
+                elapsed=finished_at - started_at,
+                error=str(e),
+            )
+
+
+# ---------------------------------------------------------------------------
 # MCP server
 # ---------------------------------------------------------------------------
 
@@ -363,6 +442,49 @@ def sandbox_exec_check(container_id: str, job_id: str) -> str:
     if status == "error":
         return f"Status: error\nError: {job['error']}"
     return f"Status: done (elapsed: {job.get('elapsed', 0):.0f}s)\n{job['output']}"
+
+
+@mcp.tool()
+def sandbox_update_start() -> str:
+    """Start an in-place update (pip install --force-reinstall) in the background.
+
+    Returns a ``job_id`` immediately.  Use :func:`sandbox_update_check` to
+    poll the status.  On success the server process will restart automatically
+    (the launcher maintains the stdio connection).
+
+    The update source is controlled by the ``--update-spec`` CLI flag
+    (default: ``.`` = current working directory).
+    """
+    job_id = str(uuid.uuid4())[:8]
+    threading.Thread(
+        target=_run_update_background,
+        args=(job_id,),
+        daemon=True,
+    ).start()
+    return f"Update job started: {job_id}\nPoll with: sandbox_update_check(job_id=\"{job_id}\")"
+
+
+@mcp.tool()
+def sandbox_update_check(job_id: str) -> str:
+    """Poll the status of an update job started by :func:`sandbox_update_start`.
+
+    Returns one of:
+    - ``Status: running (elapsed: Xs)``
+    - ``Status: done (elapsed: Xs)\n<pip output>``
+    - ``Status: error\nError: <message>``
+    - ``Error: job {job_id} not found``
+    """
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+    if job is None:
+        return f"Error: job {job_id} not found"
+    status = job["status"]
+    if status == "running":
+        elapsed = time.time() - job["started_at"]
+        return f"Status: running (elapsed: {elapsed:.0f}s)"
+    if status == "error":
+        return f"Status: error\nError: {job['error']}"
+    return f"Status: done (elapsed: {job.get('elapsed', 0):.0f}s)\n{job.get('output', '')}"
 
 
 @mcp.tool()
@@ -467,13 +589,37 @@ def main() -> None:
     parser.add_argument("--exec-timeout", type=int, default=300)
     parser.add_argument("--terminal", metavar="TERMINAL", default=None)
     parser.add_argument("--terminal-args", metavar="ARGS", default=None)
+    parser.add_argument(
+        "--update-spec",
+        metavar="SPEC",
+        default=".",
+        help="Pip install specifier for sandbox_update_start() (default: .)",
+    )
+    parser.add_argument(
+        "--auto-update",
+        action="store_true",
+        default=False,
+        help="Automatically run sandbox_update_start() on startup",
+    )
     args, remaining = parser.parse_known_args()
 
-    global _PASS_THROUGH_KEYS, _EXEC_TIMEOUT, _TERMINAL, _TERMINAL_ARGS
+    global _PASS_THROUGH_KEYS, _EXEC_TIMEOUT, _TERMINAL, _TERMINAL_ARGS, _UPDATE_SPEC, _UPDATE_AUTO
     _PASS_THROUGH_KEYS = [k.strip() for k in args.pass_through_env.split(",") if k.strip()]
     _EXEC_TIMEOUT = args.exec_timeout
     _TERMINAL = args.terminal
     _TERMINAL_ARGS = args.terminal_args
+    _UPDATE_SPEC = args.update_spec
+    _UPDATE_AUTO = args.auto_update
+
+    if _UPDATE_AUTO:
+        # Fire-and-forget: update runs in background thread
+        job_id = str(uuid.uuid4())[:8]
+        threading.Thread(
+            target=_run_update_background,
+            args=(job_id,),
+            daemon=True,
+        ).start()
+        logger.info("Auto-update started (job_id=%s)", job_id)
 
     sys.argv = [sys.argv[0]] + remaining
     mcp.run()
