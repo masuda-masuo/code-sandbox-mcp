@@ -34,7 +34,7 @@ def _pipe_stream(src: IO[bytes], dst: IO[bytes]) -> None:
                 break
             dst.write(data)
             dst.flush()
-    except (BrokenPipeError, OSError):
+    except (BrokenPipeError, OSError, ValueError):
         pass
 
 
