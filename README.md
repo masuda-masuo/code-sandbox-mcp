@@ -6,7 +6,25 @@ Inspired by [Automata-Labs-team/code-sandbox-mcp](https://github.com/Automata-La
 
 ## Why this exists
 
+### 1. Pass host credentials into containers securely
+
 The original Automata-Labs version does not support passing host environment variables into containers. This implementation adds `--pass-through-env` so credentials stored in `claude_desktop_config.json` (e.g. `GITHUB_TOKEN`) are forwarded to the container — following the [MCP security best practice](https://modelcontextprotocol.io/docs/tutorials/security/security_best_practices) of keeping secrets out of AI context.
+
+### 2. Token-efficient workflows via git clone
+
+Instead of having the AI read source files and write them back into the container one by one, the AI simply runs `git clone` inside the container. The entire codebase is fetched directly from GitHub without ever passing through the AI's context window — saving a significant amount of tokens on large projects.
+
+Only the results (e.g. `pytest` output) are returned to the AI, keeping both input and output tokens minimal.
+
+### 3. Reproducible, transparent test environments
+
+Built-in AI sandboxes are opaque: the OS, installed packages, and runtime versions are unknown and uncontrollable. With this MCP, the Docker image is specified explicitly by the user:
+
+```
+sandbox_initialize(image="python:3.11-slim-bookworm")
+```
+
+Any image on Docker Hub can be used, including custom images that replicate a production environment exactly. The AI runs tests in the same environment every time — no surprises from mismatched dependencies or hidden system packages.
 
 ## Requirements
 
@@ -126,9 +144,8 @@ pip install git+https://github.com/masuda-masuo/code-sandbox-mcp@<commit-hash>
 Default command execution timeout is 300 seconds. Override with `--exec-timeout`:
 
 ```json
-"args": ["-m", "code_sandbox_mcp.launcher", "--exec-timeout", "600"]
+"args": ["--pass-through-env", "GITHUB_TOKEN", "--exec-timeout", "600"]
 ```
-
 ## Launcher architecture
 
 ```
@@ -142,14 +159,64 @@ The launcher proxies stdio between Claude Desktop and the server. When `sandbox_
 ## In-place update (launcher mode only)
 
 ```
-sandbox_update_start()
-  → job_id
 
-# Ask Claude to notify you when done, or poll manually:
-sandbox_update_check(job_id="...")  # repeat until "Status: done"
+## Terminal auto-open (optional)
+
+When `--terminal` is set, a terminal window opens automatically every time `sandbox_exec_background` is called, tailing `/tmp/mcp.log` inside the container so you can watch command output in real time.
+
+### How it works
+
+- Each command's stdout/stderr is tee'd to `/tmp/mcp.log` inside the container.
+- A new terminal window runs `docker exec <container_id> tail -f /tmp/mcp.log`.
+- On Windows, the terminal is launched via `cmd /c start` so it runs as an independent process — it stays open even after the MCP server exits.
+- When the container stops, `tail -f` exits and a banner is printed. The window stays open (`-NoExit` + `Read-Host`) so you can review the output before closing manually.
+
+### Windows configuration
+
+```json
+{
+  "mcpServers": {
+    "code-sandbox-mcp": {
+      "command": "<output of where.exe code-sandbox-mcp>",
+      "args": [
+        "--pass-through-env", "GITHUB_TOKEN",
+        "--terminal", "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+      ],
+      "env": {
+        "GITHUB_TOKEN": "github_pat_xxxx"
+      }
+    }
+  }
+}
 ```
 
-The `--update-spec` flag controls the pip install source (default: `git+https://github.com/masuda-masuo/code-sandbox-mcp`).
+### macOS configuration (experimental)
+
+```json
+"args": [
+  "--pass-through-env", "GITHUB_TOKEN",
+  "--terminal", "/usr/bin/osascript"
+]
+```
+
+### Linux configuration (experimental)
+
+```json
+"args": [
+  "--pass-through-env", "GITHUB_TOKEN",
+  "--terminal", "/usr/bin/gnome-terminal"
+]
+```
+
+> **Note**: The `--terminal` option has been verified on **Windows only**. macOS and Linux support is implemented but untested. Behavior may differ depending on the terminal emulator and system configuration.
+
+### Custom terminal args
+
+Use `--terminal-args` to pass custom arguments to the terminal. `{container_id}` is substituted at runtime:
+
+```json
+"--terminal-args", "-NoExit -Command docker exec {container_id} tail -f /tmp/mcp.log"
+```
 
 ## Docker images
 
@@ -182,7 +249,7 @@ Any image available on [Docker Hub](https://hub.docker.com) can be used. Pull it
 |------|-------------|
 | `sandbox_initialize` | Start a container, returns `container_id` |
 | `sandbox_exec` | Run commands inside the container (synchronous) |
-| `sandbox_exec_background` | Start commands in background, returns `job_id` |
+| `sandbox_exec_background` | Start commands in background, returns `job_id`. Opens a terminal window automatically if `--terminal` is set. |
 | `sandbox_exec_check` | Poll background job status and retrieve output |
 | `sandbox_stop` | Stop and remove the container |
 | `write_file_sandbox` | Write a file into the container |
