@@ -580,7 +580,9 @@ def sandbox_update_check(job_id: str) -> str:
     Returns one of:
 
     * ``Status: running (elapsed: Xs)``
-    * ``Status: done (elapsed: Xs)""" + rest
+    * ``Status: done (elapsed: Xs)\\n<pip output>``
+    * ``Status: error\\nError: <message>``
+    * ``Error: job {job_id} not found``
     """
     with _jobs_lock:
         job = _jobs.get(job_id)
