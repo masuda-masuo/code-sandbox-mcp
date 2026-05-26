@@ -27,10 +27,8 @@ class TestSandboxExecTerminal:
             _jobs.clear()
 
     @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server._open_terminal_with_logs")
     def test_terminal_note_included_when_terminal_set(
         self,
-        mock_open_terminal: MagicMock,
         mock_docker: MagicMock,
     ) -> None:
         """When _TERMINAL is set, sandbox_exec returns a terminal notification."""
@@ -53,15 +51,12 @@ class TestSandboxExecTerminal:
             )
             assert "A terminal window has been opened" in result
             assert _CONTAINER_LOG_PATH in result
-            mock_open_terminal.assert_called_once_with("abc123def456")
         finally:
             server._TERMINAL = original_terminal
 
     @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server._open_terminal_with_logs")
     def test_terminal_note_omitted_when_terminal_none(
         self,
-        mock_open_terminal: MagicMock,
         mock_docker: MagicMock,
     ) -> None:
         """When _TERMINAL is None, sandbox_exec does NOT include terminal notification."""
@@ -83,18 +78,15 @@ class TestSandboxExecTerminal:
                 commands=["echo hello"],
             )
             assert "A terminal window has been opened" not in result
-            mock_open_terminal.assert_not_called()
         finally:
             server._TERMINAL = original_terminal
 
     @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server._open_terminal_with_logs")
     def test_container_not_found_with_terminal(
         self,
-        mock_open_terminal: MagicMock,
         mock_docker: MagicMock,
     ) -> None:
-        """When container not found, error returned and _open_terminal_with_logs not called."""
+        """When container not found, error returned without terminal notification."""
         from docker.errors import NotFound
 
         mock_client = MagicMock()
@@ -112,16 +104,13 @@ class TestSandboxExecTerminal:
             )
             assert "Error" in result
             assert "not found" in result
-            # Terminal should NOT be opened when container doesn't exist
-            mock_open_terminal.assert_not_called()
+            assert "A terminal window has been opened" not in result
         finally:
             server._TERMINAL = original_terminal
 
     @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server._open_terminal_with_logs")
     def test_terminal_with_multiple_commands(
         self,
-        mock_open_terminal: MagicMock,
         mock_docker: MagicMock,
     ) -> None:
         """Terminal notification is included even with multiple commands."""
@@ -143,7 +132,37 @@ class TestSandboxExecTerminal:
             assert "$ echo first" in result
             assert "$ echo second" in result
             assert "A terminal window has been opened" in result
-            mock_open_terminal.assert_called_once_with("abc123def456")
+        finally:
+            server._TERMINAL = original_terminal
+
+    @patch("code_sandbox_mcp.server._docker")
+    def test_command_failure_with_terminal(
+        self,
+        mock_docker: MagicMock,
+    ) -> None:
+        """Terminal notification is included even when a command fails."""
+        mock_container = MagicMock()
+        # First command succeeds, second fails
+        mock_container.exec_run.side_effect = [
+            (0, b"first output"),
+            (1, b"error message"),
+        ]
+        mock_client = MagicMock()
+        mock_client.containers.get.return_value = mock_container
+        mock_docker.return_value = mock_client
+
+        import code_sandbox_mcp.server as server
+        original_terminal = server._TERMINAL
+        server._TERMINAL = "xterm"
+
+        try:
+            result = sandbox_exec(
+                container_id="abc123def456",
+                commands=["echo first", "false"],
+            )
+            assert "$ echo first" in result
+            assert "Command exited with code 1" in result
+            assert "A terminal window has been opened" in result
         finally:
             server._TERMINAL = original_terminal
 
