@@ -447,15 +447,32 @@ def sandbox_exec(
             f"{container_id[:12]}: {e}"
         )
 
+    # Truncate log file so terminal tail shows fresh output
+    _exec_run(
+        container,
+        ["sh", "-c", f"truncate -s 0 {_CONTAINER_LOG_PATH}"],
+        stdout=False,
+        stderr=False,
+    )
+
     _open_terminal_with_logs(container_id)
 
     output_parts: list[str] = []
     for cmd in commands:
-        output_parts.append(f"$ {cmd}")
+        header = f"$ {cmd}"
+        output_parts.append(header)
+        _exec_run(
+            container,
+            ["sh", "-c", f"echo {header!r} >> {_CONTAINER_LOG_PATH}"],
+            stdout=False,
+            stderr=False,
+        )
+
         try:
+            tee_cmd = f"({cmd}) 2>&1 | tee -a {_CONTAINER_LOG_PATH}"
             exit_code, output = _exec_run(
                 container,
-                ["sh", "-c", cmd],
+                ["sh", "-c", tee_cmd],
                 stdout=True,
                 stderr=True,
                 demux=False,
@@ -468,8 +485,13 @@ def sandbox_exec(
             if decoded:
                 output_parts.append(decoded.rstrip("\n"))
             if exit_code != 0:
-                output_parts.append(
-                    f"Command exited with code {exit_code}"
+                msg = f"Command exited with code {exit_code}"
+                output_parts.append(msg)
+                _exec_run(
+                    container,
+                    ["sh", "-c", f"echo {msg!r} >> {_CONTAINER_LOG_PATH}"],
+                    stdout=False,
+                    stderr=False,
                 )
                 break
         except TimeoutError as e:
@@ -606,8 +628,8 @@ def sandbox_update_check(
     Returns one of:
 
     * ``Status: running (elapsed: Xs)``
-    * ``Status: done (elapsed: Xs)\\n<pip output>``
-    * ``Status: error\\nError: <message>``
+    * ``Status: done (elapsed: Xs)\n<pip output>``
+    * ``Status: error\nError: <message>``
     * ``Error: job {job_id} not found``
     """
     time.sleep(wait_seconds)
