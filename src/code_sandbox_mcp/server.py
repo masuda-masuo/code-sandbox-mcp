@@ -63,6 +63,7 @@ _TERMINAL: str | None = None
 _TERMINAL_ARGS: str | None = None
 
 _CONTAINER_LOG_PATH = "/tmp/mcp.log"
+_UPDATE_LOG_PATH = "/tmp/mcp_update.log"
 
 
 def _container_env() -> dict[str, str]:
@@ -253,6 +254,68 @@ def _open_terminal_with_logs(container_id: str) -> None:
         )
 
 
+def _open_update_terminal(log_path: str) -> None:
+    """Open a terminal window tailing the update log file (host-side).
+
+    Unlike ``_open_terminal_with_logs``, this tails a file on the *host*
+    filesystem (not inside a Docker container), so no ``docker exec`` is
+    needed.
+    """
+    if _TERMINAL is None:
+        return
+
+    ps_script = (
+        f"Get-Content -Path '{log_path}' -Wait; "
+        "Write-Host ''; "
+        "Write-Host '=== Update complete ===' -ForegroundColor Green; "
+        "Read-Host 'Press Enter to close this window'"
+    )
+
+    unix_script = (
+        f"tail -f '{log_path}'; "
+        "echo; "
+        "echo '=== Update complete ==='; "
+        "echo 'Press Enter to close this window.'; read"
+    )
+
+    try:
+        if sys.platform == "win32":
+            subprocess.Popen(
+                [
+                    "cmd", "/c", "start",
+                    _TERMINAL, "-NoExit", "-Command",
+                    ps_script,
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        elif _TERMINAL.endswith("osascript"):
+            script = (
+                'tell application "Terminal"\n'
+                '  activate\n'
+                f'  do script "{unix_script}"\n'
+                'end tell'
+            )
+            subprocess.Popen(
+                [_TERMINAL, "-e", script],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            subprocess.Popen(
+                [_TERMINAL, "-e", unix_script],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+    except Exception as e:
+        logger.warning(
+            "Failed to open update terminal (%s): %s", _TERMINAL, e
+        )
+
+
 # ---------------------------------------------------------------------------
 # Background job tracking
 # ---------------------------------------------------------------------------
@@ -385,9 +448,12 @@ _UPDATE_AUTO: bool = False
 def _run_update_background(job_id: str) -> None:
     """Run pip install --force-reinstall in a background thread.
 
-    On success, sets job status to ``done`` and exits the process with
+    Streams pip output to *_UPDATE_LOG_PATH* on the host so the terminal
+    window opened by ``sandbox_update_start`` can tail it in real time.
+
+    On success exits the process with
     :data:`~code_sandbox_mcp.RESTART_EXIT_CODE` (42, restart signal).
-    On failure, sets job status to ``error``.
+    On failure sets job status to ``error``.
     """
     started_at = time.time()
 
@@ -398,40 +464,50 @@ def _run_update_background(job_id: str) -> None:
         }
 
     try:
-        result = subprocess.run(
-            [
-                sys.executable, "-m", "pip", "install",
-                "--force-reinstall", _UPDATE_SPEC,
-            ],
-            capture_output=True,
-            text=True,
-        )
-        finished_at = time.time()
+        log_path = Path(_UPDATE_LOG_PATH)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if result.returncode == 0:
+        with log_path.open("w", encoding="utf-8") as log_f:
+            proc = subprocess.Popen(
+                [
+                    sys.executable, "-m", "pip", "install",
+                    "--force-reinstall", _UPDATE_SPEC,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+
+            output_lines: list[str] = []
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                log_f.write(line)
+                log_f.flush()
+                output_lines.append(line)
+
+            proc.wait()
+
+        finished_at = time.time()
+        output = "".join(output_lines)
+
+        if proc.returncode == 0:
             with _jobs_lock:
                 _jobs[job_id].update(
                     status="done",
                     finished_at=finished_at,
                     elapsed=finished_at - started_at,
-                    output=result.stdout,
+                    output=output,
                 )
-            # Give Claude a brief window to poll before exiting
             time.sleep(2)
             sys.exit(RESTART_EXIT_CODE)
         else:
-            error_msg = (
-                result.stderr
-                or result.stdout
-                or f"pip exited with code {result.returncode}"
-            )
             with _jobs_lock:
                 _jobs[job_id].update(
                     status="error",
                     finished_at=finished_at,
                     elapsed=finished_at - started_at,
-                    error=error_msg,
-                    output=result.stdout + "\n" + result.stderr,
+                    error=f"pip exited with code {proc.returncode}",
+                    output=output,
                 )
     except Exception as e:
         finished_at = time.time()
@@ -608,6 +684,11 @@ def sandbox_exec_check(
 
     Sleeps for *wait_seconds* before returning so the caller does not
     need to implement its own delay between polls (default: 10s).
+
+    **Tip:** if a terminal window is open the human can watch progress
+    directly and tell you when it is done — in that case there is no
+    need to poll at all.  Only poll when the human asks for a status
+    check or when no terminal is available.
     """
     time.sleep(wait_seconds)
     with _jobs_lock:
@@ -635,13 +716,19 @@ def sandbox_exec_check(
 def sandbox_update_start() -> str:
     """Start an in-place update in the background.
 
-    Runs ``pip install --force-reinstall`` asynchronously.  Returns a
-    ``job_id`` immediately.  Use :func:`sandbox_update_check` to poll
-    the status.  On success the server process will restart
-    automatically (the launcher maintains the stdio connection).
+    Runs ``pip install --force-reinstall`` asynchronously and streams
+    the output to a terminal window (if ``--terminal`` is configured)
+    so the human can watch progress in real time.
 
-    The update source is controlled by the ``--update-spec`` CLI flag
-    (default: ``.`` = current working directory).
+    On success the server process restarts automatically via the
+    launcher (exit code 42).  The update source is controlled by the
+    ``--update-spec`` CLI flag (default: ``.``).
+
+    **Workflow:**
+    - Call this tool once — a terminal window opens showing pip output.
+    - The human watches the terminal and tells you when it is done.
+    - You do NOT need to poll with ``sandbox_update_check`` unless the
+      human asks for a programmatic status check or no terminal is open.
     """
     job_id = str(uuid.uuid4())[:8]
     threading.Thread(
@@ -649,11 +736,21 @@ def sandbox_update_start() -> str:
         args=(job_id,),
         daemon=True,
     ).start()
-    return (
-        f"Update job started: {job_id}\n"
-        f"Poll with: sandbox_update_check("
-        f"job_id=\"{job_id}\")"
+
+    # Open a terminal showing the update log so the human can watch.
+    _open_update_terminal(_UPDATE_LOG_PATH)
+
+    terminal_note = (
+        f"\nPip output is streaming to a terminal window ({_UPDATE_LOG_PATH})."
+        "\nWatch the terminal — when it finishes the server will restart"
+        " automatically. You do NOT need to poll; just wait for the human"
+        " to tell you it's done."
+    ) if _TERMINAL else (
+        f"\nNo terminal configured. Poll with: "
+        f"sandbox_update_check(job_id=\"{job_id}\")"
     )
+
+    return f"Update job started: {job_id}{terminal_note}"
 
 
 @mcp.tool()
@@ -663,15 +760,19 @@ def sandbox_update_check(
 ) -> str:
     """Poll the status of an update job.
 
-    Sleeps for *wait_seconds* before returning so the caller does not
-    need to implement its own delay between polls (default: 30s,
-    reflecting the typical duration of a pip install from GitHub).
+    Sleeps for *wait_seconds* before returning (default: 30s).
+
+    **Note:** if ``sandbox_update_start`` opened a terminal window, the
+    human can watch pip output directly and tell you when it is done —
+    polling is unnecessary and wastes tokens.  Only call this when the
+    human explicitly asks for a status check or when no terminal is
+    available.
 
     Returns one of:
 
     * ``Status: running (elapsed: Xs)``
-    * ``Status: done (elapsed: Xs)\n<pip output>``
-    * ``Status: error\nError: <message>``
+    * ``Status: done (elapsed: Xs)``
+    * ``Status: error\\nError: <message>``
     * ``Error: job {job_id} not found``
     """
     time.sleep(wait_seconds)
@@ -685,10 +786,7 @@ def sandbox_update_check(
         return f"Status: running (elapsed: {elapsed:.0f}s)"
     if status == "error":
         return f"Status: error\nError: {job['error']}"
-    return (
-        f"Status: done (elapsed: {job.get('elapsed', 0):.0f}s)\n"
-        f"{job.get('output', '')}"
-    )
+    return f"Status: done (elapsed: {job.get('elapsed', 0):.0f}s)"
 
 
 @mcp.tool()
