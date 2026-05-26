@@ -13,6 +13,7 @@ import shlex
 import subprocess
 import sys
 import tarfile
+import tempfile
 import threading
 import time
 import uuid
@@ -63,7 +64,8 @@ _TERMINAL: str | None = None
 _TERMINAL_ARGS: str | None = None
 
 _CONTAINER_LOG_PATH = "/tmp/mcp.log"
-_UPDATE_LOG_PATH = "/tmp/mcp_update.log"
+# Host-side update log: use the OS temp dir so it works on Windows too.
+_UPDATE_LOG_PATH = str(Path(tempfile.gettempdir()) / "mcp_update.log")
 
 
 def _container_env() -> dict[str, str]:
@@ -893,7 +895,7 @@ def copy_file(
         return f"Error: {e}"
     src = Path(local_src_file)
     if not src.is_file():
-        return f"Error: {local_src_file} is not a file"
+        return f"Error: {local_src_file} is not a file\n"
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:
         tar.add(str(src), arcname=src.name)
