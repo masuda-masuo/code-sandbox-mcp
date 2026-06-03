@@ -979,10 +979,10 @@ def main() -> None:
     parser.add_argument(
         "--default-image",
         metavar="IMAGE",
-        default="python:3.12-slim-bookworm",
+        default=_DEFAULT_IMAGE,
         help=(
             "Default Docker image for sandbox_initialize() "
-            "(default: python:3.12-slim-bookworm)"
+            f"(default: {_DEFAULT_IMAGE})"
         ),
     )
     parser.add_argument(
