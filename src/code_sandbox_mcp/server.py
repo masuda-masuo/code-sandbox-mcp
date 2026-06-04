@@ -82,6 +82,20 @@ def _docker() -> docker.DockerClient:
 
 
 # ---------------------------------------------------------------------------
+# WSL detection
+# ---------------------------------------------------------------------------
+
+
+def _is_wsl() -> bool:
+    """Return True when running inside WSL (Windows Subsystem for Linux).
+
+    WSL sets the ``WSL_DISTRO_NAME`` environment variable, which is the
+    most reliable way to detect it without parsing ``/proc/version``.
+    """
+    return sys.platform != "win32" and bool(os.environ.get("WSL_DISTRO_NAME"))
+
+
+# ---------------------------------------------------------------------------
 # Cross-version exec_run helper
 # ---------------------------------------------------------------------------
 
@@ -161,8 +175,8 @@ def _terminal_already_open(container_id: str) -> bool:
 def _open_terminal_with_logs(container_id: str) -> None:
     """Open a terminal window tailing /tmp/mcp.log inside the container.
 
-    On Windows ``cmd /c start`` is used to detach the window from the
-    MCP server process, so the window survives server shutdown.
+    On Windows and WSL, ``cmd.exe /c start`` is used to detach the window
+    from the MCP server process, so the window survives server shutdown.
 
     If a terminal window has already been opened for the same
     *container_id*, this call is a no-op so that multiple sequential
@@ -201,7 +215,7 @@ def _open_terminal_with_logs(container_id: str) -> None:
     )
 
     try:
-        if sys.platform == "win32":
+        if sys.platform == "win32" or _is_wsl():
             if _TERMINAL_ARGS:
                 extra = _TERMINAL_ARGS.format(
                     container_id=container_id
@@ -211,13 +225,14 @@ def _open_terminal_with_logs(container_id: str) -> None:
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    creationflags=subprocess.CREATE_NEW_CONSOLE,
+                    creationflags=subprocess.CREATE_NEW_CONSOLE
+                    if sys.platform == "win32" else 0,
                 )
             else:
                 subprocess.Popen(
                     [
-                        "cmd", "/c", "start",
-                        _TERMINAL, "-NoExit", "-Command",
+                        "cmd.exe", "/c", "start",
+                        "powershell.exe", "-NoExit", "-Command",
                         ps_script,
                     ],
                     stdin=subprocess.DEVNULL,
@@ -282,11 +297,11 @@ def _open_update_terminal(log_path: str) -> None:
     )
 
     try:
-        if sys.platform == "win32":
+        if sys.platform == "win32" or _is_wsl():
             subprocess.Popen(
                 [
-                    "cmd", "/c", "start",
-                    _TERMINAL, "-NoExit", "-Command",
+                    "cmd.exe", "/c", "start",
+                    "powershell.exe", "-NoExit", "-Command",
                     ps_script,
                 ],
                 stdin=subprocess.DEVNULL,
