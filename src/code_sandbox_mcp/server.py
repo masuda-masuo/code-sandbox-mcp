@@ -964,6 +964,11 @@ def copy_file(
 
 
 def main() -> None:
+    global _PASS_THROUGH_KEYS, _EXEC_TIMEOUT
+    global _TERMINAL, _TERMINAL_ARGS
+    global _UPDATE_SPEC, _UPDATE_AUTO
+    global _DEFAULT_IMAGE
+
     parser = argparse.ArgumentParser(
         description=(
             "code-sandbox-mcp: "
@@ -1020,10 +1025,6 @@ def main() -> None:
     )
     args, remaining = parser.parse_known_args()
 
-    global _PASS_THROUGH_KEYS, _EXEC_TIMEOUT
-    global _TERMINAL, _TERMINAL_ARGS
-    global _UPDATE_SPEC, _UPDATE_AUTO
-    global _DEFAULT_IMAGE
     _PASS_THROUGH_KEYS = [
         k.strip()
         for k in args.pass_through_env.split(",")
