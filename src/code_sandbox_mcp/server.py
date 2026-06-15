@@ -844,7 +844,10 @@ def _read_file(container, dest_dir: str, file_name: str) -> str:
         RuntimeError: if the archive does not contain the expected file.
     """
     path = str(Path(dest_dir) / file_name)
-    bits, stat = container.get_archive(path)
+    try:
+        bits, stat = container.get_archive(path)
+    except NotFound:
+        raise FileNotFoundError(f"{path} not found in container")
     buf = io.BytesIO()
     for chunk in bits:
         buf.write(chunk)
@@ -991,9 +994,11 @@ def write_file_sandbox(
         modified = existing + file_contents
 
     elif has_old_str:
+        if not old_str:
+            return "Error: old_str must not be empty"
         idx = existing.find(old_str)
         if idx == -1:
-            return f"Error: old_str not found in file"
+            return "Error: old_str not found in file"
         modified = existing[:idx] + file_contents + existing[idx + len(old_str):]
 
     # Write the modified content
