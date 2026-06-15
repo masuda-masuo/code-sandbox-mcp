@@ -478,6 +478,22 @@ class TestWriteFileSandboxReplace:
         assert "Error" in result
         assert "not found" in result
 
+    @patch("code_sandbox_mcp.server._docker")
+    def test_replace_old_str_empty(self, mock_docker: MagicMock) -> None:
+        """Empty old_str returns an error."""
+        existing = "some content\n"
+        self._mock_container_with_file(mock_docker, existing)
+
+        result = write_file_sandbox(
+            container_id="abc123",
+            file_name="test.txt",
+            file_contents="replacement",
+            dest_dir="/root",
+            old_str="",
+        )
+        assert "Error" in result
+        assert "must not be empty" in result
+
 
 class TestWriteFileSandboxMutualExclusivity:
     """Tests that partial-update modes are mutually exclusive."""
@@ -564,7 +580,11 @@ class TestWriteFileSandboxFileNotFound:
     def test_file_not_found_for_line_range(
         self, mock_docker: MagicMock,
     ) -> None:
-        """Partial update returns error when file does not exist."""
+        """Partial update returns a dedicated 'file not found' message.
+
+        Verifies the error message specifically matches the
+        FileNotFoundError path (not the generic Exception fallback).
+        """
         from docker.errors import NotFound as DockerNotFound
 
         mock_container = MagicMock()
@@ -579,7 +599,11 @@ class TestWriteFileSandboxFileNotFound:
             container_id="abc123",
             file_name="nonexistent.txt",
             file_contents="data",
+            dest_dir="/root",
             start_line=1,
         )
-        assert "Error" in result
-        assert "not found" in result
+        # Expect the specific FileNotFoundError path message
+        expected_pattern = "file /root/nonexistent.txt not found"
+        assert expected_pattern in result, (
+            f"Expected '{expected_pattern}' in result, got: {result}"
+        )
