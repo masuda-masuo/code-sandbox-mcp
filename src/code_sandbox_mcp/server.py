@@ -874,7 +874,7 @@ def copy_project(
         return f"Error: container {container_id[:12]} not found"
     except Exception as e:
         return f"Error: {e}"
-    src = Path(local_src_dir)
+    src = Path(local_src_dir).resolve()
     if not src.is_dir():
         return f"Error: {local_src_dir} is not a directory"
     buf = io.BytesIO()
