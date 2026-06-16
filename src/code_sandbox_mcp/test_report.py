@@ -64,13 +64,20 @@ def export_test_report(report: TestReport) -> str:
 # ---------------------------------------------------------------------------
 
 # Patterns that identify non-user (library/framework) stack frames.
+# These are matched against individual lines of a traceback.
 _LIBRARY_FRAME_PATTERNS: list[re.Pattern] = [
+    # Python site-packages (pip-installed libraries)
     re.compile(r"site-packages/"),
+    # Debian/Ubuntu system packages
     re.compile(r"dist-packages/"),
+    # Standard library paths (e.g. /usr/lib/python3.12/)
     re.compile(r"lib/python"),
+    # pytest internals (both plugin and runner modules)
     re.compile(r"pytest/"),
     re.compile(r"_pytest/"),
+    # Frozen/stdlib internals (Python 3.x)
     re.compile(r"<frozen "),
+    # NumPy internals
     re.compile(r"<__array_function__"),
 ]
 
@@ -88,8 +95,17 @@ def prune_library_frames(
     """Remove library/framework frames from a traceback string.
 
     Keeps only user-code frames.  Limits the output to *max_frames*
-    lines.  If no user frames remain, returns the last *max_frames*
-    lines of the original traceback as a fallback.
+    lines (default: 5).  If no user frames remain, returns the last
+    *max_frames* lines of the original traceback as a fallback (since
+    the last frames typically contain the actual error message).
+
+    Parameters
+    ----------
+    traceback:
+        The raw traceback string (multi-line).
+    max_frames:
+        Maximum number of lines to return (default 5).  Can be
+        overridden by callers that need more or less context.
     """
     lines = traceback.split("\n")
     user_lines = [l for l in lines if not _is_library_frame(l)]
@@ -122,6 +138,7 @@ class PytestAdapter:
         total = int(summary.get("total", 0))
         passed = int(summary.get("passed", 0))
         failed = int(summary.get("failed", 0))
+        # Fallback for reports that lack "passed" count but have total/failed.
         passed = total - failed if passed == 0 and total > 0 else passed
 
         failures_list: list[TestFailure] = []
@@ -130,6 +147,7 @@ class PytestAdapter:
             outcome = t.get("outcome", "")
             if outcome in ("failed", "error"):
                 call = t.get("call", {})
+                # Crash details may be None if no traceback was captured.
                 crashdetails = call.get("crash", {}) or {}
                 traceback_str = crashdetails.get("traceback", "")
                 pruned = prune_library_frames(traceback_str)
@@ -137,6 +155,8 @@ class PytestAdapter:
                 failures_list.append(
                     TestFailure(
                         test=t.get("nodeid", t.get("name", "unknown")),
+                        # Use pruned traceback if available, else fall back to
+                        # the call's message (e.g. "AssertionError").
                         error=pruned if pruned else call.get("message", "unknown"),
                         file=t.get("file", ""),
                         line=int(t.get("line", 0)),
@@ -192,9 +212,13 @@ class JestAdapter:
                     if failure_messages:
                         combined = "\n".join(failure_messages)
                         error_text = prune_library_frames(combined)
-                        # Try to extract file:line from the first message.
-                        # Jest messages often look like:
+                        # Extract file:line from Jest stack traces.
+                        # Jest error messages typically look like:
+                        #   expect(received).toBe(expected)
                         #   at Object.<anonymous> (path/to/file.js:42:12)
+                        #                      ^^^^^^^^^^^^^^^^^^^^
+                        # The regex captures the file path (js/ts/jsx/tsx)
+                        # and the first line number.
                         match = re.search(
                             r"\s+at\s.+?[ (]([^:(]+?\.(?:js|ts|jsx|tsx)):(\d+)",
                             failure_messages[0],
@@ -203,10 +227,16 @@ class JestAdapter:
                             file = match.group(1)
                             line = int(match.group(2))
 
+                    if not error_text:
+                        error_text = (
+                            f"Test failed with no failure messages; "
+                            f"status={ar.get('status', 'unknown')}"
+                        )
+
                     failures_list.append(
                         TestFailure(
                             test=ar.get("fullName", ar.get("title", "unknown")),
-                            error=error_text if error_text else "unknown",
+                            error=error_text,
                             file=file,
                             line=line,
                         )
@@ -245,6 +275,7 @@ class GoTestAdapter:
     @staticmethod
     def parse(events: list[dict[str, Any]]) -> TestReport:
         """Parse a list of go test -json event dicts into a TestReport."""
+        # Collect per-test results (status + output lines).
         tests: dict[str, dict[str, Any]] = {}
         failures_list: list[TestFailure] = []
         passed_count = 0
@@ -255,20 +286,25 @@ class GoTestAdapter:
             action = event.get("Action", "")
             test_name = event.get("Test", "")
 
+            # Individual test pass/fail events
             if action == "pass" and test_name:
                 tests.setdefault(test_name, {})["status"] = "pass"
             elif action == "fail" and test_name:
                 tests.setdefault(test_name, {})["status"] = "fail"
+            # Test-level output (may contain error details)
             elif action == "output" and test_name:
                 entry = tests.setdefault(test_name, {})
                 entry.setdefault("output", [])
                 entry["output"].append(event.get("Output", ""))
+            # Package-level output – try to extract elapsed time.
+            # Format: "ok   \tgithub.com/user/project\t0.523s\n"
             elif action == "output" and not test_name:
                 text = event.get("Output", "")
                 m = re.search(r"ok\s+\S+\s+([\d]+\.?[\d]*)s", text)
                 if m:
                     duration = max(duration, float(m.group(1)))
 
+        # Build failures list from collected data.
         for tname, tdata in tests.items():
             if tdata.get("status") == "fail":
                 failed_count += 1
@@ -276,6 +312,9 @@ class GoTestAdapter:
                 combined = "".join(output_lines)
                 pruned = prune_library_frames(combined)
 
+                # Extract file:line from go test output.
+                # Go test outputs errors like:
+                #   /path/to/file_test.go:42: expected 2, got 1
                 file = ""
                 line = 0
                 for line_text in output_lines:
@@ -296,6 +335,7 @@ class GoTestAdapter:
             elif tdata.get("status") == "pass":
                 passed_count += 1
 
+        # Final event may carry Elapsed for overall duration.
         if events:
             last = events[-1]
             elapsed = last.get("Elapsed", None)
