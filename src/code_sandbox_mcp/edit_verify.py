@@ -94,8 +94,6 @@ def apply_unified_diff(content: str, diff_text: str) -> str:
         hunk_lines = hunk["lines"]
 
         # --- Validate context ---
-        # Walk through the hunk lines and check that context lines
-        # and removal lines match the original content.
         idx = old_start
         for hline in hunk_lines:
             if idx >= len(lines) and not hline.startswith("+"):
@@ -119,7 +117,6 @@ def apply_unified_diff(content: str, diff_text: str) -> str:
                 pass  # No-newline marker, skip
 
         # --- Apply the hunk ---
-        # Remove old lines, insert new lines.
         before = lines[:old_start]
         after = lines[old_start + old_count:] if old_start + old_count <= len(lines) else []
 
@@ -161,7 +158,6 @@ def _read_file(client: Any, container_id: str, file_path: str) -> str:
     except Exception as e:
         raise ValueError(f"Container {container_id[:12]} not found: {e}") from e
 
-    # Use cat to read the file content
     exit_code, output = container.exec_run(
         ["/bin/sh", "-c", f"cat {_quote_path(file_path)}"],
         stdout=True,
@@ -186,7 +182,6 @@ def _write_file(client: Any, container_id: str, file_path: str, content: str) ->
     except Exception as e:
         raise ValueError(f"Container {container_id[:12]} not found: {e}") from e
 
-    # Write via base64 to avoid shell escaping issues
     import base64
 
     encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
@@ -226,22 +221,7 @@ def apply_patch_to_file(
     file_path: str,
     diff_content: str,
 ) -> str:
-    """Apply a unified diff to a file inside the sandbox container.
-
-    This reads the current file from the container, applies the unified
-    diff, and writes the result back.  The caller (the AI) sends only a
-    compact diff instead of the full file content, reducing token cost
-    by 1-2 orders of magnitude.
-
-    Args:
-        client: Docker client instance.
-        container_id: 12-character container ID prefix.
-        file_path: Path to the file inside the container.
-        diff_content: Unified diff string to apply.
-
-    Returns:
-        Success message or error description.
-    """
+    """Apply a unified diff to a file inside the sandbox container."""
     try:
         current = _read_file(client, container_id, file_path)
     except ValueError as e:
@@ -270,7 +250,7 @@ def read_file_lines(
     offset: int = 0,
     limit: int = 50,
 ) -> dict[str, Any]:
-    """Read *limit* lines from *file_path* starting at *offset*.
+    """Read *limit* lines from *file_path* starting at *offset.
 
     Returns a dict with:
     - ``content`` (str): the requested lines joined by newline
@@ -279,13 +259,6 @@ def read_file_lines(
     - ``has_more`` (bool): whether there are more lines after this range
     - ``next_offset`` (int | None): offset for the next page (if any)
     - ``error`` (str | None): error message if the read failed
-
-    Args:
-        client: Docker client instance.
-        container_id: 12-character container ID prefix.
-        file_path: Path to the file inside the container.
-        offset: 0-indexed line offset to start reading from.
-        limit: Maximum number of lines to return.
     """
     try:
         content = _read_file(client, container_id, file_path)
@@ -322,10 +295,11 @@ def lint_file(
     - ``rule`` (str): rule identifier (e.g. ``"F401"``, ``"unused-import"``)
     - ``message`` (str): human-readable message
 
-    If no suitable linter is found, returns a single entry with
-    ``rule`` set to ``"no-linter"``.
+    If no suitable linter is installed in the container, returns a
+    single entry with ``rule`` set to ``"no-linter"`` and a
+    descriptive message listing the expected tools.
 
-    Currently supported:
+    Supported:
     - ``.py`` files → ``ruff check`` (falls back to ``pylint``)
     - ``.js``, ``.ts``, ``.jsx``, ``.tsx`` files → ``eslint``
     """
@@ -335,23 +309,60 @@ def lint_file(
         return [{"file": file_path, "line": 0, "rule": "error", "message": str(e)}]
 
     ext = _get_extension(file_path)
-    results: list[dict[str, Any]] = []
 
-    if ext == ".py":
-        results = _run_ruff(container, file_path)
-        if not results:
-            results = _run_pylint(container, file_path)
+    if ext in (".py",):
+        return _run_python_linter(container, file_path)
     elif ext in (".js", ".ts", ".jsx", ".tsx"):
-        results = _run_eslint(container, file_path)
+        return _run_js_linter(container, file_path)
     else:
-        results = [{
+        return [{
             "file": file_path,
             "line": 0,
             "rule": "no-linter",
             "message": f"No linter configured for {ext} files",
         }]
 
-    return results
+
+def _run_python_linter(container: Any, file_path: str) -> list[dict[str, Any]]:
+    """Try ruff, fall back to pylint. Report tool absence clearly."""
+    # ruff (primary)
+    ruff_result = _run_ruff(container, file_path)
+    if ruff_result is not None:
+        return ruff_result  # ruff ran (results may be empty = clean file)
+
+    # pylint (fallback)
+    pylint_result = _run_pylint(container, file_path)
+    if pylint_result is not None:
+        return pylint_result
+
+    return [{
+        "file": file_path,
+        "line": 0,
+        "rule": "no-linter",
+        "message": (
+            "No Python linter found in container. "
+            "Install ruff or pylint, or use a custom image "
+            "(pass --default-image to the server)."
+        ),
+    }]
+
+
+def _run_js_linter(container: Any, file_path: str) -> list[dict[str, Any]]:
+    """Try eslint."""
+    eslint_result = _run_eslint(container, file_path)
+    if eslint_result is not None:
+        return eslint_result
+
+    return [{
+        "file": file_path,
+        "line": 0,
+        "rule": "no-linter",
+        "message": (
+            "No JS/TS linter found in container. "
+            "Install eslint, or use a custom image "
+            "(pass --default-image to the server)."
+        ),
+    }]
 
 
 def type_check_file(
@@ -362,8 +373,9 @@ def type_check_file(
     """Run a type checker on *file_path* inside the container.
 
     Returns the same structure as :func:`lint_file`.
+    If no type checker is installed, returns ``rule: "no-typechecker"``.
 
-    Currently supported:
+    Supported:
     - ``.py`` files → ``mypy`` (falls back to ``pyright``)
     - ``.ts``, ``.tsx`` files → ``tsc --noEmit``
     """
@@ -373,23 +385,58 @@ def type_check_file(
         return [{"file": file_path, "line": 0, "rule": "error", "message": str(e)}]
 
     ext = _get_extension(file_path)
-    results: list[dict[str, Any]] = []
 
-    if ext == ".py":
-        results = _run_mypy(container, file_path)
-        if not results:
-            results = _run_pyright(container, file_path)
+    if ext in (".py",):
+        return _run_python_typecheck(container, file_path)
     elif ext in (".ts", ".tsx"):
-        results = _run_tsc(container, file_path)
+        return _run_ts_typecheck(container, file_path)
     else:
-        results = [{
+        return [{
             "file": file_path,
             "line": 0,
             "rule": "no-typechecker",
             "message": f"No type checker configured for {ext} files",
         }]
 
-    return results
+
+def _run_python_typecheck(container: Any, file_path: str) -> list[dict[str, Any]]:
+    """Try mypy, fall back to pyright."""
+    mypy_result = _run_mypy(container, file_path)
+    if mypy_result is not None:
+        return mypy_result
+
+    pyright_result = _run_pyright(container, file_path)
+    if pyright_result is not None:
+        return pyright_result
+
+    return [{
+        "file": file_path,
+        "line": 0,
+        "rule": "no-typechecker",
+        "message": (
+            "No Python type checker found in container. "
+            "Install mypy or pyright, or use a custom image "
+            "(pass --default-image to the server)."
+        ),
+    }]
+
+
+def _run_ts_typecheck(container: Any, file_path: str) -> list[dict[str, Any]]:
+    """Try tsc."""
+    tsc_result = _run_tsc(container, file_path)
+    if tsc_result is not None:
+        return tsc_result
+
+    return [{
+        "file": file_path,
+        "line": 0,
+        "rule": "no-typechecker",
+        "message": (
+            "No TypeScript type checker found in container. "
+            "Install typescript (tsc), or use a custom image "
+            "(pass --default-image to the server)."
+        ),
+    }]
 
 
 # ---------------------------------------------------------------------------
@@ -408,13 +455,16 @@ def _get_extension(file_path: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _run_ruff(container: Any, file_path: str) -> list[dict[str, Any]]:
-    """Run ``ruff check --output-format json`` and parse results."""
+def _run_ruff(container: Any, file_path: str) -> list[dict[str, Any]] | None:
+    """Run ``ruff check --output-format json``. Returns None if ruff is not installed."""
     exit_code, output = container.exec_run(
         ["/bin/sh", "-c", f"ruff check --output-format json {_quote_path(file_path)} 2>/dev/null || true"],
         stdout=True,
         stderr=True,
     )
+    # exit_code 127 = command not found
+    if exit_code == 127:
+        return None
     stdout_part, _ = output if isinstance(output, tuple) else (output, b"")
     stdout_text = stdout_part.decode("utf-8", errors="replace") if stdout_part else ""
     return _parse_ruff_output(stdout_text, file_path)
@@ -443,13 +493,15 @@ def _parse_ruff_output(raw: str, file_path: str) -> list[dict[str, Any]]:
     return results
 
 
-def _run_pylint(container: Any, file_path: str) -> list[dict[str, Any]]:
-    """Run ``pylint --output-format json`` and parse results."""
+def _run_pylint(container: Any, file_path: str) -> list[dict[str, Any]] | None:
+    """Run ``pylint --output-format json``. Returns None if pylint is not installed."""
     exit_code, output = container.exec_run(
         ["/bin/sh", "-c", f"pylint --output-format json {_quote_path(file_path)} 2>/dev/null || true"],
         stdout=True,
         stderr=True,
     )
+    if exit_code == 127:
+        return None
     stdout_part, _ = output if isinstance(output, tuple) else (output, b"")
     stdout_text = stdout_part.decode("utf-8", errors="replace") if stdout_part else ""
     return _parse_pylint_output(stdout_text, file_path)
@@ -478,13 +530,15 @@ def _parse_pylint_output(raw: str, file_path: str) -> list[dict[str, Any]]:
     return results
 
 
-def _run_eslint(container: Any, file_path: str) -> list[dict[str, Any]]:
-    """Run ``eslint --format json`` and parse results."""
+def _run_eslint(container: Any, file_path: str) -> list[dict[str, Any]] | None:
+    """Run ``eslint --format json``. Returns None if eslint is not installed."""
     exit_code, output = container.exec_run(
         ["/bin/sh", "-c", f"eslint --format json {_quote_path(file_path)} 2>/dev/null || true"],
         stdout=True,
         stderr=True,
     )
+    if exit_code == 127:
+        return None
     stdout_part, _ = output if isinstance(output, tuple) else (output, b"")
     stdout_text = stdout_part.decode("utf-8", errors="replace") if stdout_part else ""
     return _parse_eslint_output(stdout_text, file_path)
@@ -520,13 +574,15 @@ def _parse_eslint_output(raw: str, file_path: str) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def _run_mypy(container: Any, file_path: str) -> list[dict[str, Any]]:
-    """Run ``mypy --show-error-codes`` and parse results."""
+def _run_mypy(container: Any, file_path: str) -> list[dict[str, Any]] | None:
+    """Run ``mypy --show-error-codes``. Returns None if mypy is not installed."""
     exit_code, output = container.exec_run(
         ["/bin/sh", "-c", f"mypy --show-error-codes {_quote_path(file_path)} 2>/dev/null || true"],
         stdout=True,
         stderr=True,
     )
+    if exit_code == 127:
+        return None
     stdout_part, _ = output if isinstance(output, tuple) else (output, b"")
     stdout_text = stdout_part.decode("utf-8", errors="replace") if stdout_part else ""
     return _parse_mypy_output(stdout_text, file_path)
@@ -553,13 +609,15 @@ def _parse_mypy_output(raw: str, file_path: str) -> list[dict[str, Any]]:
     return results
 
 
-def _run_pyright(container: Any, file_path: str) -> list[dict[str, Any]]:
-    """Run ``pyright --outputjson`` and parse results."""
+def _run_pyright(container: Any, file_path: str) -> list[dict[str, Any]] | None:
+    """Run ``pyright --outputjson``. Returns None if pyright is not installed."""
     exit_code, output = container.exec_run(
         ["/bin/sh", "-c", f"pyright --outputjson {_quote_path(file_path)} 2>/dev/null || true"],
         stdout=True,
         stderr=True,
     )
+    if exit_code == 127:
+        return None
     stdout_part, _ = output if isinstance(output, tuple) else (output, b"")
     stdout_text = stdout_part.decode("utf-8", errors="replace") if stdout_part else ""
     return _parse_pyright_output(stdout_text, file_path)
@@ -586,17 +644,18 @@ def _parse_pyright_output(raw: str, file_path: str) -> list[dict[str, Any]]:
     return results
 
 
-def _run_tsc(container: Any, file_path: str) -> list[dict[str, Any]]:
-    """Run ``tsc --noEmit`` and parse results."""
+def _run_tsc(container: Any, file_path: str) -> list[dict[str, Any]] | None:
+    """Run ``tsc --noEmit``. Returns None if tsc is not installed."""
     exit_code, output = container.exec_run(
         ["/bin/sh", "-c", f"npx tsc --noEmit {_quote_path(file_path)} 2>&1 || true"],
         stdout=True,
         stderr=True,
     )
+    if exit_code == 127:
+        return None
     stdout_part, _ = output if isinstance(output, tuple) else (output, b"")
     stdout_text = stdout_part.decode("utf-8", errors="replace") if stdout_part else ""
 
-    # Try JSON output first, then fall back to text parsing
     parsed = _parse_tsc_json(stdout_text, file_path)
     if not parsed:
         parsed = _parse_tsc_text(stdout_text, file_path)
@@ -626,8 +685,6 @@ def _parse_tsc_text(raw: str, file_path: str) -> list[dict[str, Any]]:
 
 def _parse_tsc_json(raw: str, file_path: str) -> list[dict[str, Any]]:
     """Parse tsc JSON output (``--listFiles`` style) if available."""
-    # tsc does not output JSON by default; this is a fallback
-    # for when tsoutputformat or similar is used.
     raw = raw.strip()
     if not raw:
         return []
