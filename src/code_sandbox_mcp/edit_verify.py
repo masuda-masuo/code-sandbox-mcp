@@ -211,6 +211,20 @@ def _quote_path(path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Sandbox environment for tools that need writable cache dirs.
+# ---------------------------------------------------------------------------
+
+#: Environment variables to set before running linters/type checkers
+#: inside sandbox containers.  Containers often run as ``nobody`` with
+#: a read-only ``/``, so cache directories must point to ``/tmp``.
+_SANDBOX_ENV: str = (
+    "RUFF_CACHE_DIR=/tmp/.ruff_cache "
+    "MYPY_CACHE_DIR=/tmp/.mypy_cache "
+    "mkdir -p /tmp/.ruff_cache /tmp/.mypy_cache 2>/dev/null; "
+)
+
+
+# ---------------------------------------------------------------------------
 # Public API: called by @mcp.tool() handlers in server.py
 # ---------------------------------------------------------------------------
 
@@ -458,7 +472,8 @@ def _get_extension(file_path: str) -> str:
 def _run_ruff(container: Any, file_path: str) -> list[dict[str, Any]] | None:
     """Run ``ruff check --output-format json``. Returns None if ruff is not installed."""
     exit_code, output = container.exec_run(
-        ["/bin/sh", "-c", f"ruff check --output-format json {_quote_path(file_path)} 2>/dev/null || true"],
+        ["/bin/sh", "-c",
+         f"{_SANDBOX_ENV}ruff check --output-format json {_quote_path(file_path)} 2>/dev/null || true"],
         stdout=True,
         stderr=True,
     )
@@ -496,7 +511,8 @@ def _parse_ruff_output(raw: str, file_path: str) -> list[dict[str, Any]]:
 def _run_pylint(container: Any, file_path: str) -> list[dict[str, Any]] | None:
     """Run ``pylint --output-format json``. Returns None if pylint is not installed."""
     exit_code, output = container.exec_run(
-        ["/bin/sh", "-c", f"pylint --output-format json {_quote_path(file_path)} 2>/dev/null || true"],
+        ["/bin/sh", "-c",
+         f"{_SANDBOX_ENV}pylint --output-format json {_quote_path(file_path)} 2>/dev/null || true"],
         stdout=True,
         stderr=True,
     )
@@ -533,7 +549,8 @@ def _parse_pylint_output(raw: str, file_path: str) -> list[dict[str, Any]]:
 def _run_eslint(container: Any, file_path: str) -> list[dict[str, Any]] | None:
     """Run ``eslint --format json``. Returns None if eslint is not installed."""
     exit_code, output = container.exec_run(
-        ["/bin/sh", "-c", f"eslint --format json {_quote_path(file_path)} 2>/dev/null || true"],
+        ["/bin/sh", "-c",
+         f"{_SANDBOX_ENV}eslint --format json {_quote_path(file_path)} 2>/dev/null || true"],
         stdout=True,
         stderr=True,
     )
@@ -577,7 +594,8 @@ def _parse_eslint_output(raw: str, file_path: str) -> list[dict[str, Any]]:
 def _run_mypy(container: Any, file_path: str) -> list[dict[str, Any]] | None:
     """Run ``mypy --show-error-codes``. Returns None if mypy is not installed."""
     exit_code, output = container.exec_run(
-        ["/bin/sh", "-c", f"mypy --show-error-codes {_quote_path(file_path)} 2>/dev/null || true"],
+        ["/bin/sh", "-c",
+         f"{_SANDBOX_ENV}mypy --show-error-codes {_quote_path(file_path)} 2>/dev/null || true"],
         stdout=True,
         stderr=True,
     )
@@ -612,7 +630,8 @@ def _parse_mypy_output(raw: str, file_path: str) -> list[dict[str, Any]]:
 def _run_pyright(container: Any, file_path: str) -> list[dict[str, Any]] | None:
     """Run ``pyright --outputjson``. Returns None if pyright is not installed."""
     exit_code, output = container.exec_run(
-        ["/bin/sh", "-c", f"pyright --outputjson {_quote_path(file_path)} 2>/dev/null || true"],
+        ["/bin/sh", "-c",
+         f"{_SANDBOX_ENV}pyright --outputjson {_quote_path(file_path)} 2>/dev/null || true"],
         stdout=True,
         stderr=True,
     )
@@ -647,7 +666,8 @@ def _parse_pyright_output(raw: str, file_path: str) -> list[dict[str, Any]]:
 def _run_tsc(container: Any, file_path: str) -> list[dict[str, Any]] | None:
     """Run ``tsc --noEmit``. Returns None if tsc is not installed."""
     exit_code, output = container.exec_run(
-        ["/bin/sh", "-c", f"npx tsc --noEmit {_quote_path(file_path)} 2>&1 || true"],
+        ["/bin/sh", "-c",
+         f"{_SANDBOX_ENV}npx tsc --noEmit {_quote_path(file_path)} 2>&1 || true"],
         stdout=True,
         stderr=True,
     )
