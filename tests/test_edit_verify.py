@@ -346,13 +346,16 @@ class TestParseEslintOutput:
 
 
 class TestParseMypyOutput:
-    """Tests for mypy text output parsing."""
+    """Tests for mypy text output parsing.
+
+    Mypy output format: ``file:line:column: severity: message [error-code]``
+    """
 
     def test_empty_output(self) -> None:
         assert _parse_mypy_output("", "file.py") == []
 
     def test_single_error(self) -> None:
-        raw = "file.py:42: error: Incompatible return value type [return-value]"
+        raw = "file.py:42:5: error: Incompatible return value type [return-value]"
         result = _parse_mypy_output(raw, "file.py")
         assert len(result) == 1
         assert result[0]["file"] == "file.py"
@@ -361,13 +364,13 @@ class TestParseMypyOutput:
         assert "Incompatible" in result[0]["message"]
 
     def test_error_without_code(self) -> None:
-        raw = "src/main.py:5: error: Name 'x' is not defined"
+        raw = "src/main.py:5:10: error: Name 'x' is not defined"
         result = _parse_mypy_output(raw, "file.py")
         assert len(result) == 1
         assert result[0]["rule"] == "error"  # falls back to severity
 
     def test_warning_and_note(self) -> None:
-        raw = "file.py:1: warning: Something [W001]\nfile.py:2: note: Hint"
+        raw = "file.py:1:1: warning: Something [W001]\nfile.py:2:1: note: Hint"
         result = _parse_mypy_output(raw, "file.py")
         assert len(result) == 2
         assert result[0]["rule"] == "W001"
