@@ -8,6 +8,7 @@ import io
 import json
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -260,8 +261,6 @@ def sandbox_exec_check(container_id: str, job_id: str) -> str:
         Status string: ``"running"`` if still in progress, stdout
         output on success, or ``"Error: ..."`` on failure.
     """
-    import shlex
-
     client = _docker()
     try:
         container = client.containers.get(container_id)
@@ -553,8 +552,6 @@ def copy_project(
     Returns:
         Success or error message.
     """
-    import tarfile
-
     client = _docker()
     try:
         container = client.containers.get(container_id)
@@ -605,8 +602,6 @@ def copy_file(
     Returns:
         Success or error message.
     """
-    import tarfile
-
     client = _docker()
     try:
         container = client.containers.get(container_id)
@@ -814,11 +809,9 @@ def run_container_and_exec(
     """
     import json
 
-    # Validate commands: must not be None and must not be empty
+    # Validate commands: must not be None or empty
     if not commands:
         return json.dumps({"status": "error", "error": "No commands provided"})
-    if len(commands) == 0:
-        return json.dumps({"status": "error", "error": "Commands list is empty"})
 
     resolved = image or _DEFAULT_IMAGE
     client = _docker()
