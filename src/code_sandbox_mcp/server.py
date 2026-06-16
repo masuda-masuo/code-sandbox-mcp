@@ -47,7 +47,7 @@ from code_sandbox_mcp.security import (
 # ---------------------------------------------------------------------------
 
 #: Default Docker image used when no image is specified.
-_DEFAULT_IMAGE: str = "python@sha256:93f7863c0947b9b9d57d250290bfba40a7e0b4aadbace6630a6c353d332fb0e5"
+_DEFAULT_IMAGE: str = "python@sha256:93ab4b7fa528b25124c97bcc755415e60eb671a86b4dbe0328df2fe2d1c1193d"
 
 #: Stdio proxy - shared with launcher via this module variable.
 _TERMINAL: str | None = None
@@ -698,9 +698,9 @@ def run_container_and_exec(
     """Start a container, execute commands, then remove it (one-shot).
 
     This is a convenience wrapper around:
-    :func:`sandbox_initialize` \u2192 :func:`sandbox_exec` \u2192 :func:`sandbox_stop`.
+    :func:`sandbox_initialize` → :func:`sandbox_exec` → :func:`sandbox_stop`.
 
-    Output is sanitized (ANSI codes, ``\\r`` progress bars, timestamps
+    Output is sanitized (ANSI codes, ``\r`` progress bars, timestamps
     removed) and consecutive repeated lines are compressed
     (``[\u00d7N] content``).
 
