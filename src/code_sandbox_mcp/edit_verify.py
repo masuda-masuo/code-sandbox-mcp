@@ -77,16 +77,20 @@ def apply_unified_diff(content: str, diff_text: str) -> str:
     if not hunks:
         return content  # No hunks → no change
 
-    lines = content.split("\n")
-    # Track the original number of lines for trailing-newline detection.
     original_ends_with_newline = content.endswith("\n")
+    lines = content.split("\n")
+
+    # When the original content ends with \n, split() produces a trailing
+    # empty element (e.g. "a\nb\n" → ["a", "b", ""]).  Removing it here
+    # avoids double trailing newlines after join.
+    if original_ends_with_newline and lines and lines[-1] == "":
+        lines = lines[:-1]
 
     # Apply hunks in reverse order (bottom to top) so line offsets in
     # earlier hunks remain valid.
     for hunk in reversed(hunks):
         old_start = hunk["old_start"] - 1  # Convert to 0-indexed
         old_count = hunk["old_count"]
-        new_start = hunk["new_start"] - 1
         hunk_lines = hunk["lines"]
 
         # --- Validate context ---
