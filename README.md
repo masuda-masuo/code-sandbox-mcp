@@ -80,7 +80,8 @@ To avoid the timeout, use **SSE** (Server-Sent Events) or **HTTP** transport:
         "-m", "code_sandbox_mcp.launcher",
         "--transport", "sse",
         "--host", "127.0.0.1",
-        "--port", "8765"
+        "--port", "8765",
+        "--pass-through-env", "GITHUB_TOKEN"
       ],
       "env": {
         "GITHUB_TOKEN": "github_pat_xxxx"
@@ -89,6 +90,8 @@ To avoid the timeout, use **SSE** (Server-Sent Events) or **HTTP** transport:
   }
 }
 ```
+
+> **Note**: When running multiple instances of the MCP server, use a unique `--port` for each instance to avoid port conflicts. You can also use `--port 0` to let the OS pick a random available port (the actual port will be logged on startup).
 
 Available transports:
 - `stdio` — Default. Subject to ~60s client timeout.

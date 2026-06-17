@@ -95,6 +95,13 @@ def _detect_transport(argv: list[str]) -> str:
 
     Looks for ``--transport`` in *argv* and returns its value,
     defaulting to ``"stdio"``.
+
+    We scan *argv* manually rather than using ``argparse`` because
+    these arguments are the *server's* CLI arguments, not the
+    launcher's.  The launcher parses its own flags with
+    ``parse_known_args`` and forwards the rest to the server;
+    re-parsing server-only flags here would duplicate definitions
+    and break if server flags are added or changed.
     """
     for i, arg in enumerate(argv):
         if arg == "--transport" and i + 1 < len(argv):
@@ -184,7 +191,20 @@ def main() -> None:
             err_thread.start()
         else:
             # SSE/HTTP mode: server binds to a TCP port, no stdio proxy.
-            proc = subprocess.Popen(server_args)
+            # stderr is still captured and forwarded so server log
+            # messages (logger.error/warning) are visible to the
+            # launcher's stderr for debugging.
+            proc = subprocess.Popen(
+                server_args,
+                stdout=None,  # leave inheritable for the child
+                stderr=subprocess.PIPE,
+            )
+            err_thread = threading.Thread(
+                target=_pipe_stream,
+                args=(proc.stderr, sys.stderr.buffer),
+                daemon=True,
+            )
+            err_thread.start()
 
         returncode = proc.wait()
 
@@ -194,6 +214,8 @@ def main() -> None:
                 _current_stdin[0] = None
 
             out_thread.join(timeout=1)
+            err_thread.join(timeout=1)
+        else:
             err_thread.join(timeout=1)
 
         if returncode != RESTART_EXIT_CODE:

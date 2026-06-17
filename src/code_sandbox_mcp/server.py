@@ -1035,18 +1035,11 @@ def type_check_in_container(container_id: str, file_path: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def main() -> None:
-    """Parse CLI arguments and run the MCP server.
+def _build_arg_parser() -> argparse.ArgumentParser:
+    """Build the argument parser for the MCP server.
 
-    Supports ``--terminal`` for update progress windows,
-    ``--default-image`` for overriding the default Docker image,
-    and ``--transport`` to select the MCP transport protocol.
-
-    HTTP-based transports (``sse``, ``http``, ``streamable-http``)
-    are not subject to the ~60-second client timeout that affects
-    ``stdio``, making them suitable for long-running Docker
-    operations such as ``docker pull`` or ``copy_project`` on
-    large directories.
+    Exported separately so tests can exercise the parser without
+    starting the server.
     """
     import argparse
 
@@ -1098,6 +1091,23 @@ def main() -> None:
         default=8765,
         help="Port for HTTP transport (default: 8765)",
     )
+    return parser
+
+
+def main() -> None:
+    """Parse CLI arguments and run the MCP server.
+
+    Supports ``--terminal`` for update progress windows,
+    ``--default-image`` for overriding the default Docker image,
+    and ``--transport`` to select the MCP transport protocol.
+
+    HTTP-based transports (``sse``, ``http``, ``streamable-http``)
+    are not subject to the ~60-second client timeout that affects
+    ``stdio``, making them suitable for long-running Docker
+    operations such as ``docker pull`` or ``copy_project`` on
+    large directories.
+    """
+    parser = _build_arg_parser()
     args = parser.parse_args()
 
     global _TERMINAL, _UPDATE_SPEC, _UPDATE_LOG_DIR, _DEFAULT_IMAGE
