@@ -149,9 +149,9 @@ def strip_timestamps(text: str) -> str:
 #: Captures the variable name (group 1) so the replacement preserves
 #: the key while masking the secret value.
 _TOKEN_MASK_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r"(GITHUB_TOKEN=)[^\s'\"]+"),
-    re.compile(r"(GH_TOKEN=)[^\s'\"]+"),
-    re.compile(r"(GITHUB_TOKEN_SOURCE=)[^\s'\"]+"),
+    re.compile(r"(GITHUB_TOKEN=)['\"]?[^\s'\"]+['\"]?"),
+    re.compile(r"(GH_TOKEN=)['\"]?[^\s'\"]+['\"]?"),
+    re.compile(r"(GITHUB_TOKEN_SOURCE=)['\"]?[^\s'\"]+['\"]?"),
 ]
 
 

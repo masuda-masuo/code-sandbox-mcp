@@ -95,6 +95,7 @@ def _container_env(inject_vcs_token: bool = False) -> dict[str, str]:
             val = os.environ.get(key)
             if val:
                 env[key] = val
+                logger.info("Injected VCS env var %s into container environment", key)
     return env
 
 
