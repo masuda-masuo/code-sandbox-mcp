@@ -362,3 +362,45 @@ class TestCopyProject:
             dest_dir="/nonexistent",
         )
         assert "Error" in result
+
+
+class TestServerArgs:
+    """Tests for server argument parsing using the actual parser."""
+
+    def test_default_transport_is_stdio(self) -> None:
+        """Default transport should be stdio."""
+        from code_sandbox_mcp.server import _build_arg_parser
+        parser = _build_arg_parser()
+        args = parser.parse_args([])
+        assert args.transport == "stdio"
+
+    def test_sse_transport_parsed(self) -> None:
+        """--transport sse should be parsed correctly."""
+        from code_sandbox_mcp.server import _build_arg_parser
+        parser = _build_arg_parser()
+        args = parser.parse_args(["--transport", "sse", "--host", "0.0.0.0", "--port", "9876"])
+        assert args.transport == "sse"
+        assert args.host == "0.0.0.0"
+        assert args.port == 9876
+
+    def test_http_transport_parsed(self) -> None:
+        """--transport http should be parsed correctly."""
+        from code_sandbox_mcp.server import _build_arg_parser
+        parser = _build_arg_parser()
+        args = parser.parse_args(["--transport", "http"])
+        assert args.transport == "http"
+
+    def test_streamable_http_transport_parsed(self) -> None:
+        """--transport streamable-http should be parsed correctly."""
+        from code_sandbox_mcp.server import _build_arg_parser
+        parser = _build_arg_parser()
+        args = parser.parse_args(["--transport", "streamable-http"])
+        assert args.transport == "streamable-http"
+
+    def test_default_host_port(self) -> None:
+        """Default host and port should be 127.0.0.1:8765."""
+        from code_sandbox_mcp.server import _build_arg_parser
+        parser = _build_arg_parser()
+        args = parser.parse_args([])
+        assert args.host == "127.0.0.1"
+        assert args.port == 8765
