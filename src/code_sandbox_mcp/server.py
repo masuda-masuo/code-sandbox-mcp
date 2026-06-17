@@ -71,13 +71,16 @@ from code_sandbox_mcp.security import (
 #:
 #: **このフィールドは直接編集しないこと。**
 #: ``docker/Dockerfile.sandbox`` を変更すると CI
-#: (`.github/workflows/build-sandbox-image.yml`) が自動で
+#: (``.github/workflows/build-sandbox-image.yml``) が自動で
 #: GHCR へ push し、新ダイジェストを書き込んだ PR を作成する。
 #:
-#: ローカルで試す場合:
+#: ローカルで試す場合::
+#:
 #:   docker build -f docker/Dockerfile.sandbox -t code-sandbox-mcp/sandbox:latest .
 #:   docker images --digests code-sandbox-mcp/sandbox  # sha256 を取得
 #:   # 取得した sha256 を下の文字列に貼り付けてテスト
+#:
+#: Refs: Issue #56, docs/design.md §2.1, §11, §12
 _DEFAULT_IMAGE: str = "python@sha256:93ab4b7fa528b25124c97bcc755415e60eb671a86b4dbe0328df2fe2d1c1193d"
 
 #: Stdio proxy - shared with launcher via this module variable.
