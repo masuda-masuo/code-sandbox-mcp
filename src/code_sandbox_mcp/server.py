@@ -81,7 +81,7 @@ from code_sandbox_mcp.security import (
 #:   # 取得した sha256 を下の文字列に貼り付けてテスト
 #:
 #: Refs: Issue #56, docs/design.md §2.1, §11, §12
-_DEFAULT_IMAGE: str = "python@sha256:93ab4b7fa528b25124c97bcc755415e60eb671a86b4dbe0328df2fe2d1c1193d"
+_DEFAULT_IMAGE: str = "ghcr.io/masuda-masuo/code-sandbox-mcp/sandbox@sha256:749832ed0d5c642574688e3ad0cc9179f1649495bd2bbc0179e11e25b32b8271"
 
 #: Stdio proxy - shared with launcher via this module variable.
 _TERMINAL: str | None = None
