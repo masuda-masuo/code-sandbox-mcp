@@ -1,0 +1,51 @@
+FROM python:3.12-slim-bookworm@sha256:93ab4b7fa528b25124c97bcc755415e60eb671a86b4dbe0328df2fe2d1c1193d
+
+LABEL description="Code Sandbox MCP - pre-built sandbox image with VCS and analysis tools"
+LABEL maintainer="Code Sandbox MCP"
+
+# Install system dependencies: git, gh, build-essential for uv
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    gh \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv (fast Python package installer)
+COPY --from=ghcr.io/astral-sh/uv:0.5 /uv /uvx /bin/
+
+# Install ripgrep (fast grep alternative)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ripgrep \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install ast-grep (structural search)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ast-grep \
+    && rm -rf /var/lib/apt/lists/* || \
+    (curl -fsSL https://github.com/ast-grep/ast-grep/releases/latest/download/ast-grep-x86_64-unknown-linux-gnu.tar.gz \
+    | tar xz -C /usr/local/bin/)
+
+# Install Python analysis tools
+RUN uv tool install ruff && \
+    uv tool install pyright
+
+# Install semgrep
+RUN uv tool install semgrep
+
+# Create dedicated sandbox user (non-root, with home directory)
+RUN groupadd -r sandbox && \
+    useradd -r -g sandbox -d /home/sandbox -s /bin/bash -m sandbox && \
+    chmod 755 /home/sandbox
+
+# Default to sandbox user
+USER sandbox
+WORKDIR /home/sandbox
+
+# Verify tools
+RUN git --version && \
+    gh --version && \
+    uv --version && \
+    rg --version && \
+    ast-grep --version && \
+    ruff --version && \
+    semgrep --version

@@ -24,6 +24,11 @@ from code_sandbox_mcp.security import (
 )
 
 
+def _has_network(result: dict) -> bool:
+    """Helper: return True if the result has network enabled (bridge)."""
+    return result.get("network_mode") == "bridge"
+
+
 class TestSecurityProfile:
     """Tests for SecurityProfile dataclass defaults."""
 
@@ -75,6 +80,15 @@ class TestSecurityProfile:
         assert profile.mem_limit == "1g"
         assert profile.network_mode == "bridge"
         assert profile.require_digest is False
+
+    def test_default_allow_network_false(self) -> None:
+        assert DEFAULT_SECURITY_PROFILE.allow_network is False
+
+    def test_allow_network_true_sets_network_mode(self) -> None:
+        profile = SecurityProfile(allow_network=True)
+        assert profile.allow_network is True
+        # allow_network does not change network_mode directly;
+        # build_secure_run_kwargs handles the override
 
 
 class TestValidateImageRef:
@@ -228,6 +242,28 @@ class TestBuildSecureRunKwargs:
         # Original should not have been modified
         assert "user" not in original
         assert "mem_limit" not in original
+
+    def test_allow_network_false_keeps_network_mode_none(self) -> None:
+        profile = SecurityProfile(allow_network=False)
+        result = build_secure_run_kwargs(profile)
+        assert result["network_mode"] == "none"
+
+    def test_allow_network_true_sets_bridge(self) -> None:
+        profile = SecurityProfile(allow_network=True)
+        result = build_secure_run_kwargs(profile)
+        assert result["network_mode"] == "bridge"
+
+    def test_allow_network_overrides_explicit_network_mode(self) -> None:
+        """allow_network=True should override any network_mode setting."""
+        profile = SecurityProfile(allow_network=True, network_mode="none")
+        result = build_secure_run_kwargs(profile)
+        assert result["network_mode"] == "bridge"
+
+    def test_allow_network_false_preserves_explicit_network_mode(self) -> None:
+        """allow_network=False should preserve an explicit network_mode."""
+        profile = SecurityProfile(allow_network=False, network_mode="bridge")
+        result = build_secure_run_kwargs(profile)
+        assert result["network_mode"] == "bridge"
 
 
 class TestDangerousSocketDetection:
