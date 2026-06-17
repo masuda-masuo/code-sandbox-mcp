@@ -134,6 +134,19 @@ class SecurityProfile:
     #: :func:`build_secure_run_kwargs`.
     network_mode: str = "none"
 
+    #: Whether to allow network access (default ``False``).
+    #:
+    #: When ``True``, forces ``network_mode="bridge"`` overriding any
+    #: explicit ``network_mode`` setting.  This is the preferred way to
+    #: enable networking for VCS operations (git/gh) while keeping the
+    #: default secure (no network).
+    #:
+    #: .. warning::
+    #:    Network access is a boundary-crossing operation (§2.2).
+    #:    When set to ``True``, the caller **must** ensure journal
+    #:    recording (§8) is performed.
+    allow_network: bool = False
+
     #: Whether to require image digest references (``image@sha256:...``).
     require_digest: bool = True
 
@@ -332,7 +345,10 @@ def build_secure_run_kwargs(
     if profile.pids_limit:
         result.setdefault("pids_limit", profile.pids_limit)
 
-    # 6. Network off by default
-    result.setdefault("network_mode", profile.network_mode)
+    # 6. Network off by default (allow_network overrides to "bridge")
+    if profile.allow_network:
+        result["network_mode"] = "bridge"
+    else:
+        result.setdefault("network_mode", profile.network_mode)
 
     return result

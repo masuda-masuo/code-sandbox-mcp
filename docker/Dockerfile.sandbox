@@ -19,7 +19,7 @@
 #   高速install : uv
 #   JSON処理    : jq
 
-FROM python:3.12-slim-bookworm
+FROM python:3.12-slim-bookworm@sha256:93ab4b7fa528b25124c97bcc755415e60eb671a86b4dbe0328df2fe2d1c1193d
 
 # ── システムパッケージ ──────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -61,19 +61,24 @@ RUN set -ex; \
       | tar -xz --strip-components=1 -C /usr/local/bin/ "sd-v${SD_VERSION}-${TRIPLE}/sd"
 
 # ── Python ツール (uv 経由で高速インストール) ─────────────────────
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.local/bin:${PATH}"
+# uv をシステムワイドにインストール (全ユーザの PATH に含まれる)
+RUN curl -LsSf https://astral.sh/uv/install.sh \
+  | env UV_INSTALL_DIR=/usr/local/bin sh
 
-RUN uv tool install ruff \
- && uv tool install pyright \
- && uv tool install semgrep \
- && uv pip install --system pytest pytest-json-report
+# システム Python へのパッケージインストール (root 権限が必要)
+RUN uv pip install --system pytest pytest-json-report
 
 # ── 非 root ユーザ ─────────────────────────────────────────────────
 # § 2.1 静的ガードレール: 非 root 実行を既定強制
 RUN groupadd -r sandbox && useradd -r -g sandbox -m -d /home/sandbox sandbox
 USER sandbox
 WORKDIR /home/sandbox
+
+# ── uv ツールのインストール (sandbox ユーザの ~/.local/bin に配置) ──
+# これにより ruff / pyright / semgrep が sandbox ユーザの PATH に自動で含まれる
+RUN uv tool install ruff \
+ && uv tool install pyright \
+ && uv tool install semgrep
 
 # ── ヘルスチェック ─────────────────────────────────────────────────
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \

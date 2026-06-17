@@ -16,6 +16,7 @@ import tarfile
 import tempfile
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,11 @@ from code_sandbox_mcp.security import (
 # ---------------------------------------------------------------------------
 
 #: Default Docker image used when no image is specified.
+#: Uses the pre-built sandbox image (docker/Dockerfile.sandbox) which
+#: includes git/gh/uv/ripgrep/ruff/pyright/semgrep and a dedicated
+#: ``sandbox`` user.  Build with:
+#:   docker build -f docker/Dockerfile.sandbox -t code-sandbox-mcp .
+#: then update the digest below.
 _DEFAULT_IMAGE: str = "python@sha256:93ab4b7fa528b25124c97bcc755415e60eb671a86b4dbe0328df2fe2d1c1193d"
 
 #: Stdio proxy - shared with launcher via this module variable.
@@ -107,7 +113,8 @@ def _ensure_image(image: str) -> None:
 
 
 @mcp.tool()
-def sandbox_initialize(image: str | None = None) -> str:
+def sandbox_initialize(image: str | None = None,
+                       allow_network: bool = False) -> str:
     """Start a new Docker sandbox container.
 
     The container runs ``sleep infinity`` and stays alive until
@@ -120,6 +127,10 @@ def sandbox_initialize(image: str | None = None) -> str:
         image: Docker image to use (e.g. ``python@sha256:...``).
                Defaults to the image specified
                via the ``--default-image`` CLI argument in the server config.
+        allow_network: Whether to allow network access (default ``False``).
+               Set to ``True`` for VCS operations (git/gh) that need to
+               reach GitHub API.  Network access is a boundary-crossing
+               operation and should be used only when necessary.
 
     The image must be pulled locally before use: docker pull <image>
 
@@ -135,8 +146,10 @@ def sandbox_initialize(image: str | None = None) -> str:
     except ValueError as e:
         return f"Error: {e}"
 
+    profile = replace(DEFAULT_SECURITY_PROFILE, allow_network=allow_network)
+
     run_kwargs = build_secure_run_kwargs(
-        DEFAULT_SECURITY_PROFILE,
+        profile,
         command="sleep infinity",
         detach=True,
         remove=False,
@@ -744,6 +757,7 @@ def run_container_and_exec(
     max_lines: int = 100,
     offset: int = 0,
     limit: int = 50,
+    allow_network: bool = False,
 ) -> str:
     """Start a container, execute commands, then remove it (one-shot).
 
@@ -760,13 +774,16 @@ def run_container_and_exec(
                   Must not be ``None`` or empty.
         verbose: Output verbosity:
 
-            - ``"error_only"``: Show output only on error.
+            - ``"error_only"``: Show output only on failure.
             - ``"summary"``: Show first/last lines with omission notice.
             - ``"full"``: Show all output.
         max_lines: Maximum lines to show in summary/error_only mode.
         offset: Line offset for paging (0-indexed).  Use with *limit*
             to paginate through the output.
         limit: Maximum lines per page.
+        allow_network: Whether to allow network access (default ``False``).
+               Set to ``True`` for VCS operations (git/gh) that need to
+               reach GitHub API.
 
     Returns:
         JSON string with ``status``, ``output`` (or ``error``),
@@ -790,8 +807,9 @@ def run_container_and_exec(
     # --- Start container ---
     try:
         validate_image_ref(resolved)
+        profile = replace(DEFAULT_SECURITY_PROFILE, allow_network=allow_network)
         run_kwargs = build_secure_run_kwargs(
-            DEFAULT_SECURITY_PROFILE,
+            profile,
             command="sleep infinity",
             detach=True,
             remove=False,
