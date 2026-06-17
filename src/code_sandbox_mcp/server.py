@@ -4,12 +4,12 @@ This module defines the FastMCP server and all tool handlers.
 """
 from __future__ import annotations
 
+import argparse
 import io
 import json
 import logging
 import os
 import shlex
-import shutil
 import subprocess
 import sys
 import tarfile
@@ -35,6 +35,22 @@ from code_sandbox_mcp.output_control import (
     paginate_output,
     sanitize_output,
     truncate_output,
+)
+from code_sandbox_mcp.journal import (
+    record_boundary_crossing,
+    record_copy,
+    record_exec as journal_record_exec,
+    record_file_write,
+    record_initialize,
+    record_stop,
+    read_journal,
+    get_runs,
+    get_journal_path,
+)
+from code_sandbox_mcp.trace import (
+    generate_json_trace,
+    generate_html_trace,
+    get_trace_dir,
 )
 from code_sandbox_mcp.security import (
     DEFAULT_SECURITY_PROFILE,
@@ -176,10 +192,16 @@ def sandbox_initialize(image: str | None = None,
     except Exception as e:
         return f"Error: {e}"
 
+    cid = container.id[:12]
     logger.info(
-        "Container %s started (image=%s)", container.id[:12], resolved
+        "Container %s started (image=%s)", cid, resolved
     )
-    return container.id[:12]
+    record_initialize(
+        cid, resolved,
+        allow_network=allow_network,
+        inject_vcs_token=inject_vcs_token,
+    )
+    return cid
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +296,13 @@ def sandbox_exec(
         result["exit_code"] = exit_code
     if stderr_text and verbose != "error_only":
         result["stderr"] = stderr_text
+
+    journal_record_exec(
+        container_id[:12],
+        commands,
+        exit_code,
+        verbose=verbose,
+    )
 
     return json.dumps(result)
 
@@ -402,13 +431,15 @@ def sandbox_stop(container_id: str) -> str:
         Success message or error message beginning with ``"Error:"``.
     """
     client = _docker()
+    cid = container_id[:12]
     try:
         container = client.containers.get(container_id)
         container.stop()
         container.remove()
-        return f"Container {container_id[:12]} stopped and removed"
+        record_stop(cid)
+        return f"Container {cid} stopped and removed"
     except NotFound:
-        return f"Error: container {container_id[:12]} not found"
+        return f"Error: container {cid} not found"
     except Exception as e:
         return f"Error: {e}"
 
@@ -548,6 +579,7 @@ def write_file_sandbox(
 
     if exit_code != 0:
         return f"Error: {stderr_text}"
+    record_file_write(container_id[:12], file_name, dest_dir, len(content))
     return f"Written {len(content)} bytes to {dest_path}"
 
 
@@ -606,6 +638,7 @@ def copy_project(
             container.put_archive(dest_dir, buf)
         except APIError as e:
             return f"Error: {e}"
+        record_copy(container_id[:12], "copy_project", local_src_dir, f"{dest_dir}/{arcname}")
         return (
             f"Copied {local_src_dir} to {dest_dir}/{arcname} "
             f"in container {container_id[:12]}"
@@ -657,6 +690,7 @@ def copy_file(
         container.put_archive(dest, buf)
     except APIError as e:
         return f"Error: {e}"
+    record_copy(container_id[:12], "copy_file", local_src_file, dest)
     return (
         f"Copied {local_src_file} to {dest} "
         f"in container {container_id[:12]}"
@@ -874,6 +908,11 @@ def run_container_and_exec(
         return json.dumps({"status": "error", "error": f"Failed to start container: {e}"})
 
     container_id = container.id[:12]
+    record_initialize(
+        container_id, resolved,
+        allow_network=allow_network,
+        inject_vcs_token=inject_vcs_token,
+    )
 
     # --- Execute commands ---
     try:
@@ -894,6 +933,7 @@ def run_container_and_exec(
             container.remove()
         except Exception:
             pass
+        record_stop(container_id)
         return json.dumps({"status": "error", "error": f"Execution failed: {e}"})
 
     # --- Clean up container ---
@@ -945,6 +985,17 @@ def run_container_and_exec(
     if stderr_text and verbose != "error_only":
         result["stderr"] = stderr_text
 
+    journal_record_exec(
+        container_id, commands, exit_code, verbose=verbose,
+    )
+    if allow_network or inject_vcs_token:
+        record_boundary_crossing(
+            container_id,
+            "run_container_and_exec",
+            f"network={allow_network} vcs_token={inject_vcs_token}",
+        )
+
+    record_stop(container_id)
     return json.dumps(result)
 
 
@@ -972,7 +1023,7 @@ def apply_patch(container_id: str, file_path: str, diff_content: str) -> str:
     """
     client = _docker()
     try:
-        container = client.containers.get(container_id)
+        _ = client.containers.get(container_id)
     except NotFound:
         return f"Error: container {container_id[:12]} not found"
     except Exception as e:
@@ -1009,7 +1060,7 @@ def read_file_range(
     """
     client = _docker()
     try:
-        container = client.containers.get(container_id)
+        _ = client.containers.get(container_id)
     except NotFound:
         return json.dumps({"error": f"Container {container_id[:12]} not found"})
     except Exception as e:
@@ -1083,6 +1134,104 @@ def type_check_in_container(container_id: str, file_path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Observability tools (Issue #44)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def sandbox_read_journal(
+    run_id: str | None = None,
+    max_entries: int = 100,
+) -> str:
+    """Read the append-only execution journal.
+
+    Returns JSON array of journal entries, optionally filtered by
+    *run_id*.  The journal records every container lifecycle event
+    (initialize, exec, stop) and boundary-crossing operation.
+
+    Args:
+        run_id: If provided, only return entries for this run.
+            Omit to see all journal entries.
+        max_entries: Maximum number of entries to return
+            (most recent first, default 100).
+
+    Returns:
+        JSON string with a list of journal entry objects, each
+        containing ``ts``, ``run_id``, ``container_id``,
+        ``operation``, and operation-specific fields.
+    """
+    entries = read_journal(run_id=run_id, max_entries=max_entries)
+    return json.dumps(entries, ensure_ascii=False)
+
+
+@mcp.tool()
+def sandbox_trace(
+    run_id: str,
+    format: str = "json",
+) -> str:
+    """Generate a replay trace for a specific run.
+
+    Creates an HTML or JSON trace file from journal entries for
+    *run_id*, enabling post-hoc review of "why did it do that?".
+
+    Args:
+        run_id: The run identifier to generate a trace for.
+        format: Output format - ``"json"`` or ``"html"``
+            (default ``"json"``).
+
+    Returns:
+        Path to the generated trace file, or an error message
+        beginning with ``"Error:"``.
+    """
+    if format not in ("json", "html"):
+        return "Error: format must be 'json' or 'html'"
+
+    if format == "json":
+        path = generate_json_trace(run_id)
+    else:
+        path = generate_html_trace(run_id)
+
+    if not path:
+        return f"Error: run_id {run_id} not found in journal"
+    return path
+
+
+@mcp.tool()
+def sandbox_list_runs() -> str:
+    """List all runs recorded in the execution journal.
+
+    Returns a JSON array of run summaries, each with ``run_id``,
+    ``started``, ``image``, ``operations``, ``boundary_crossings``,
+    ``status``, and ``last_ts``.
+
+    Returns:
+        JSON string with a list of run summary objects.
+    """
+    runs = get_runs()
+    return json.dumps(runs, ensure_ascii=False)
+
+
+@mcp.tool()
+def sandbox_journal_path() -> str:
+    """Return the filesystem path to the execution journal file.
+
+    Returns:
+        Absolute path to ``~/.code-sandbox-mcp/journal.log``.
+    """
+    return get_journal_path()
+
+
+@mcp.tool()
+def sandbox_trace_dir() -> str:
+    """Return the filesystem path to the trace output directory.
+
+    Returns:
+        Absolute path to ``~/.code-sandbox-mcp/traces/``.
+    """
+    return get_trace_dir()
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -1093,8 +1242,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     Exported separately so tests can exercise the parser without
     starting the server.
     """
-    import argparse
-
     parser = argparse.ArgumentParser(description="Code Sandbox MCP Server")
     parser.add_argument(
         "--terminal",
@@ -1143,6 +1290,33 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=8765,
         help="Port for HTTP transport (default: 8765)",
     )
+    parser.add_argument(
+        "--dashboard-port",
+        type=int,
+        default=0,
+        help=(
+            "Start the observability web dashboard on localhost "
+            "(default: 0 = disabled).  Suggested: 8766."
+        ),
+    )
+    parser.add_argument(
+        "--webhook-url",
+        type=str,
+        default=None,
+        help="Webhook URL for push notifications",
+    )
+    parser.add_argument(
+        "--failure-threshold",
+        type=int,
+        default=5,
+        help="Notify after N consecutive failures (default: 5)",
+    )
+    parser.add_argument(
+        "--long-run-seconds",
+        type=int,
+        default=300,
+        help="Notify after this many seconds of execution (default: 300)",
+    )
     return parser
 
 
@@ -1151,7 +1325,9 @@ def main() -> None:
 
     Supports ``--terminal`` for update progress windows,
     ``--default-image`` for overriding the default Docker image,
-    and ``--transport`` to select the MCP transport protocol.
+    ``--transport`` to select the MCP transport protocol,
+    ``--dashboard-port`` for the observability dashboard,
+    and ``--webhook-url`` for push notifications.
 
     HTTP-based transports (``sse``, ``http``, ``streamable-http``)
     are not subject to the ~60-second client timeout that affects
@@ -1170,6 +1346,21 @@ def main() -> None:
     if args.default_image:
         validate_image_ref(args.default_image)
         _DEFAULT_IMAGE = args.default_image
+
+    # Configure notifications if webhook is set
+    if args.webhook_url or args.failure_threshold != 5 or args.long_run_seconds != 300:
+        from code_sandbox_mcp.notify import configure
+        configure(
+            webhook_url=args.webhook_url,
+            failure_threshold=args.failure_threshold,
+            long_run_seconds=args.long_run_seconds,
+        )
+
+    # Start dashboard if requested
+    if args.dashboard_port > 0:
+        from code_sandbox_mcp.dashboard import start_dashboard
+        msg = start_dashboard(port=args.dashboard_port)
+        logger.info(msg)
 
     transport = args.transport
     if transport == "stdio":
