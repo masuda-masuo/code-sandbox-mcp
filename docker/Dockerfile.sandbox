@@ -50,32 +50,37 @@ RUN curl -LsSf https://astral.sh/uv/install.sh \
   | env UV_INSTALL_DIR=/usr/local/bin sh
 
 # ── ast-grep (sg) と sd ────────────────────────────────────────────
-# ast-grep: 0.37.0 以降リリースアセットが zip + linux-gnu に変更
-#   (0.32.0 以前は tar.gz + musl)
-# sd: v1.0.0 の確認済みアセット形式（拡張子なし単一バイナリ）を使用
-#   v1.1.0 以降は Linux 向けアセット形式が変わった可能性があるため固定
+# ast-grep v0.43.0: zip + linux-gnu (0.37.0 以降の形式)
+# sd v1.0.0: tar.gz 形式、アーチごとにターゲットが異なる
+#   amd64 → x86_64-unknown-linux-gnu.tar.gz
+#   arm64 → aarch64-unknown-linux-musl.tar.gz
+# （GitHub API で実際のアセット名を確認済み）
 ARG TARGETARCH
 ARG AST_GREP_VERSION=0.43.0
 ARG SD_VERSION=1.0.0
 
 RUN set -ex; \
     case "${TARGETARCH}" in \
-      amd64) ARCH="x86_64" ;; \
-      arm64) ARCH="aarch64" ;; \
+      amd64) \
+        AST_ARCH="x86_64"; \
+        SD_TRIPLE="x86_64-unknown-linux-gnu" ;; \
+      arm64) \
+        AST_ARCH="aarch64"; \
+        SD_TRIPLE="aarch64-unknown-linux-musl" ;; \
       *) echo "Unsupported arch: ${TARGETARCH}" && exit 1 ;; \
     esac; \
     \
-    # ast-grep: zip 形式、linux-gnu ターゲット
-    curl -fsSL "https://github.com/ast-grep/ast-grep/releases/download/${AST_GREP_VERSION}/app-${ARCH}-unknown-linux-gnu.zip" \
+    # ast-grep: zip 形式、linux-gnu
+    curl -fsSL "https://github.com/ast-grep/ast-grep/releases/download/${AST_GREP_VERSION}/app-${AST_ARCH}-unknown-linux-gnu.zip" \
       -o /tmp/ast-grep.zip \
     && unzip -q /tmp/ast-grep.zip -d /tmp/ast-grep \
     && mv /tmp/ast-grep/sg /usr/local/bin/sg \
     && chmod +x /usr/local/bin/sg \
     && rm -rf /tmp/ast-grep /tmp/ast-grep.zip; \
     \
-    # sd v1.0.0: 拡張子なし単一バイナリ形式（確認済み）
-    curl -fsSL "https://github.com/chmln/sd/releases/download/v${SD_VERSION}/sd-v${SD_VERSION}-${ARCH}-unknown-linux-gnu" \
-      -o /usr/local/bin/sd \
+    # sd: tar.gz 内のバイナリ名は "sd"
+    curl -fsSL "https://github.com/chmln/sd/releases/download/v${SD_VERSION}/sd-v${SD_VERSION}-${SD_TRIPLE}.tar.gz" \
+      | tar -xz -C /usr/local/bin/ --strip-components=0 "sd-v${SD_VERSION}-${SD_TRIPLE}/sd" \
     && chmod +x /usr/local/bin/sd
 
 # ── Python ツール (root 権限が必要なものをここで) ────────────────────
