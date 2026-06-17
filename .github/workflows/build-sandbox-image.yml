@@ -24,18 +24,15 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile.sandbox
           push: true
           tags: ghcr.io/${{ github.repository }}/sandbox:latest
-          # Output digest for updating _DEFAULT_IMAGE
-      - name: Get image digest
-        id: digest
+      - name: Print digest
         run: |
-          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/${{ github.repository }}/sandbox:latest | cut -d@ -f2)
-          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
-          echo "Image built: ghcr.io/${{ github.repository }}/sandbox@$DIGEST"
+          echo "Image built: ${{ steps.build.outputs.digest }}"
           echo "Update _DEFAULT_IMAGE in server.py to:"
-          echo "ghcr.io/${{ github.repository }}/sandbox@$DIGEST"
+          echo "ghcr.io/${{ github.repository }}/sandbox@${{ steps.build.outputs.digest }}"

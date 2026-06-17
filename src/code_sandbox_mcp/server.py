@@ -16,6 +16,7 @@ import tarfile
 import tempfile
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +38,6 @@ from code_sandbox_mcp.output_control import (
 )
 from code_sandbox_mcp.security import (
     DEFAULT_SECURITY_PROFILE,
-    SecurityProfile,
     build_secure_run_kwargs,
     validate_image_ref,
 )
@@ -146,22 +146,7 @@ def sandbox_initialize(image: str | None = None,
     except ValueError as e:
         return f"Error: {e}"
 
-    profile = DEFAULT_SECURITY_PROFILE
-    if allow_network:
-        profile = SecurityProfile(
-            allow_network=True,
-            user=profile.user,
-            forbid_privileged=profile.forbid_privileged,
-            reject_dangerous_sockets=profile.reject_dangerous_sockets,
-            allowed_host_mount_prefixes=profile.allowed_host_mount_prefixes,
-            mem_limit=profile.mem_limit,
-            memswap_limit=profile.memswap_limit,
-            cpu_period=profile.cpu_period,
-            cpu_quota=profile.cpu_quota,
-            pids_limit=profile.pids_limit,
-            network_mode=profile.network_mode,
-            require_digest=profile.require_digest,
-        )
+    profile = replace(DEFAULT_SECURITY_PROFILE, allow_network=allow_network)
 
     run_kwargs = build_secure_run_kwargs(
         profile,
@@ -822,22 +807,7 @@ def run_container_and_exec(
     # --- Start container ---
     try:
         validate_image_ref(resolved)
-        profile = DEFAULT_SECURITY_PROFILE
-        if allow_network:
-            profile = SecurityProfile(
-                allow_network=True,
-                user=profile.user,
-                forbid_privileged=profile.forbid_privileged,
-                reject_dangerous_sockets=profile.reject_dangerous_sockets,
-                allowed_host_mount_prefixes=profile.allowed_host_mount_prefixes,
-                mem_limit=profile.mem_limit,
-                memswap_limit=profile.memswap_limit,
-                cpu_period=profile.cpu_period,
-                cpu_quota=profile.cpu_quota,
-                pids_limit=profile.pids_limit,
-                network_mode=profile.network_mode,
-                require_digest=profile.require_digest,
-            )
+        profile = replace(DEFAULT_SECURITY_PROFILE, allow_network=allow_network)
         run_kwargs = build_secure_run_kwargs(
             profile,
             command="sleep infinity",

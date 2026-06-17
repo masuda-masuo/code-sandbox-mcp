@@ -24,11 +24,6 @@ from code_sandbox_mcp.security import (
 )
 
 
-def _has_network(result: dict) -> bool:
-    """Helper: return True if the result has network enabled (bridge)."""
-    return result.get("network_mode") == "bridge"
-
-
 class TestSecurityProfile:
     """Tests for SecurityProfile dataclass defaults."""
 
