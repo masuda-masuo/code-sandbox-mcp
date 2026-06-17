@@ -64,11 +64,20 @@ from code_sandbox_mcp.security import (
 # ---------------------------------------------------------------------------
 
 #: Default Docker image used when no image is specified.
-#: Uses the pre-built sandbox image (docker/Dockerfile.sandbox) which
-#: includes git/gh/uv/ripgrep/ruff/pyright/semgrep and a dedicated
-#: ``sandbox`` user.  Build with:
-#:   docker build -f docker/Dockerfile.sandbox -t code-sandbox-mcp .
-#: then update the digest below.
+#:
+#: Uses the pre-built sandbox image (``docker/Dockerfile.sandbox``) which
+#: includes git/gh/uv/ripgrep/ruff/pyright/semgrep and runs as the
+#: dedicated ``sandbox`` user (not ``nobody``).
+#:
+#: **このフィールドは直接編集しないこと。**
+#: ``docker/Dockerfile.sandbox`` を変更すると CI
+#: (`.github/workflows/build-sandbox-image.yml`) が自動で
+#: GHCR へ push し、新ダイジェストを書き込んだ PR を作成する。
+#:
+#: ローカルで試す場合:
+#:   docker build -f docker/Dockerfile.sandbox -t code-sandbox-mcp/sandbox:latest .
+#:   docker images --digests code-sandbox-mcp/sandbox  # sha256 を取得
+#:   # 取得した sha256 を下の文字列に貼り付けてテスト
 _DEFAULT_IMAGE: str = "python@sha256:93ab4b7fa528b25124c97bcc755415e60eb671a86b4dbe0328df2fe2d1c1193d"
 
 #: Stdio proxy - shared with launcher via this module variable.
@@ -847,7 +856,7 @@ def run_container_and_exec(
 
     Output is sanitized (ANSI codes, ``\r`` progress bars, timestamps
     removed, VCS token values masked) and consecutive repeated lines
-    are compressed (``[\u00d7N] content``).
+    are compressed (``[×N] content``).
 
     Args:
         image: Docker image to use (``image@sha256:...``).

@@ -7,6 +7,11 @@ on:
       - "docker/Dockerfile.sandbox"
   workflow_dispatch:
 
+permissions:
+  contents: write
+  packages: write
+  pull-requests: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -31,8 +36,55 @@ jobs:
           file: docker/Dockerfile.sandbox
           push: true
           tags: ghcr.io/${{ github.repository }}/sandbox:latest
+
       - name: Print digest
         run: |
           echo "Image built: ${{ steps.build.outputs.digest }}"
-          echo "Update _DEFAULT_IMAGE in server.py to:"
+          echo "New _DEFAULT_IMAGE:"
           echo "ghcr.io/${{ github.repository }}/sandbox@${{ steps.build.outputs.digest }}"
+
+      # _DEFAULT_IMAGE を新ダイジェストへ書き換えて PR を自動作成
+      - name: Update _DEFAULT_IMAGE in server.py
+        env:
+          NEW_IMAGE: "ghcr.io/${{ github.repository }}/sandbox@${{ steps.build.outputs.digest }}"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="ci/update-sandbox-image-${{ github.run_id }}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "${BRANCH}"
+
+          # _DEFAULT_IMAGE の値を置換（行全体を対象にして誤マッチを防ぐ）
+          sed -i \
+            "s|^_DEFAULT_IMAGE: str = \".*\"|_DEFAULT_IMAGE: str = \"${NEW_IMAGE}\"|" \
+            src/code_sandbox_mcp/server.py
+
+          git add src/code_sandbox_mcp/server.py
+          git commit -m "chore: update _DEFAULT_IMAGE to sandbox image ${NEW_IMAGE}"
+          git push origin "${BRANCH}"
+
+          gh pr create \
+            --base main \
+            --head "${BRANCH}" \
+            --title "chore: update _DEFAULT_IMAGE to latest sandbox image" \
+            --body "$(cat <<'EOF'
+## 自動生成 PR
+
+CI で `docker/Dockerfile.sandbox` のビルドが完了したため、
+`_DEFAULT_IMAGE` を新しいダイジェストへ更新します。
+
+### 変更内容
+- `src/code_sandbox_mcp/server.py` の `_DEFAULT_IMAGE` を GHCR 上の最新 sandbox イメージへ差し替え
+
+### ビルド情報
+- Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+- Digest: `${{ steps.build.outputs.digest }}`
+
+### 確認事項
+- [ ] 既定コンテナで `git --version` / `gh --version` が通ること
+- [ ] コンテナ内ユーザーが `sandbox`（`whoami` で確認）
+- [ ] `allow_network=True` + `inject_vcs_token=True` で `gh issue view` が動作すること
+
+Closes #56
+EOF
+)"
