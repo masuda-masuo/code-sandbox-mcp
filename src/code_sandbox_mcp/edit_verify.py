@@ -419,11 +419,10 @@ def _parse_sg_json(raw: str, max_results: int) -> list[dict[str, Any]]:
         if not line:
             continue
         try:
-            entries = json.loads(line)
+            obj = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if not isinstance(entries, list):
-            continue
+        entries = obj if isinstance(obj, list) else [obj]
         for entry in entries:
             file_path = entry.get("file", "")
             match_range = entry.get("range", {})

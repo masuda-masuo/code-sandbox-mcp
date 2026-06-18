@@ -778,7 +778,11 @@ class TestParseSgJson:
         result = _parse_sg_json(raw, 50)
         assert len(result) == 1
 
-    def test_non_list_entry_skipped(self) -> None:
-        raw = json.dumps({"not": "a list"})
+    def test_dict_entry_handled(self) -> None:
+        """Single dict per line (stream format) is wrapped and processed."""
+        raw = json.dumps({"file": "app.py", "range": {"start": {"line": 5}}, "text": "hello"})
         result = _parse_sg_json(raw, 50)
-        assert result == []
+        assert len(result) == 1
+        assert result[0]["file"] == "app.py"
+        assert result[0]["line"] == 5
+        assert result[0]["text"] == "hello"
