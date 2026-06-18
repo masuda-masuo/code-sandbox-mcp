@@ -14,7 +14,17 @@ import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Any
 
-from code_sandbox_mcp.journal import read_journal, get_runs, get_journal_path
+from code_sandbox_mcp.journal import (
+    get_pending_approvals,
+    get_runs,
+    get_journal_path,
+    read_journal,
+    record_boundary_crossing,
+)
+from code_sandbox_mcp.token import (
+    verify_and_consume,
+    reject_token,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +192,42 @@ def _escape(text: str) -> str:
     return _html.escape(text, quote=True)
 
 
+def _render_approval_queue() -> str:
+    """Render the approval queue section of the dashboard."""
+    pending = get_pending_approvals()
+    if not pending:
+        return '<div class="empty">No pending approvals</div>'
+
+    cards: list[str] = []
+    for entry in pending:
+        token = entry.get("token", "")
+        sub_op = _escape(entry.get("sub_operation", "unknown"))
+        details = _escape(entry.get("details", ""))
+        container_id = _escape(entry.get("container_id", ""))
+        run_id = _escape(entry.get("run_id", ""))
+        ts = _escape(entry.get("ts", ""))
+
+        cards.append(f"""<div class="card approval-pending" style="margin-bottom:12px">
+    <h2>Pending: {sub_op}</h2>
+    <div class="meta">Container: <span class="mono">{container_id}</span></div>
+    <div class="meta">Run: <span class="mono">{run_id}</span></div>
+    <div class="meta">Time: {ts}</div>
+    <div class="meta">Details: {details}</div>
+    <div class="meta" style="margin-top:8px">
+        <form method="post" action="/approve" style="display:inline">
+            <input type="hidden" name="token" value="{_escape(token)}">
+            <button type="submit" class="approve">Approve</button>
+        </form>
+        <form method="post" action="/reject" style="display:inline; margin-left:8px">
+            <input type="hidden" name="token" value="{_escape(token)}">
+            <button type="submit" class="reject">Reject</button>
+        </form>
+    </div>
+</div>""")
+
+    return "\n".join(cards)
+
+
 class _DashboardHandler(BaseHTTPRequestHandler):
     """HTTP request handler for the dashboard."""
 
@@ -219,6 +265,54 @@ class _DashboardHandler(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
+    def do_POST(self) -> None:
+        path = self.path.split("?")[0]
+
+        if path in ("/approve", "/reject"):
+            self._handle_approval(path)
+        else:
+            self.send_error(404)
+
+    def _handle_approval(self, path: str) -> None:
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length).decode("utf-8")
+        params = {}
+        for pair in body.split("&"):
+            if "=" in pair:
+                key, val = pair.split("=", 1)
+                from urllib.parse import unquote
+                params[key] = unquote(val)
+
+        token = params.get("token", "")
+        if not token:
+            self._send_html("<p>Missing token</p>", code=400)
+            return
+
+        msg: str
+        if path == "/approve":
+            result = verify_and_consume(token)
+            if result is None:
+                msg = "<p>Token invalid, expired, or already used.</p><p><a href='/'>← Back to Dashboard</a></p>"
+                self._send_html(msg, code=400)
+                return
+            record_boundary_crossing(
+                result["container_id"],
+                result["operation"],
+                result["details"],
+                approved=True,
+                token=token,
+            )
+            msg = f"<p>Operation <strong>{_escape(result['operation'])}</strong> approved.</p><p><a href='/'>← Back to Dashboard</a></p>"
+        else:
+            rejected = reject_token(token)
+            if not rejected:
+                msg = "<p>Token not found or already resolved.</p><p><a href='/'>← Back to Dashboard</a></p>"
+                self._send_html(msg, code=400)
+                return
+            msg = "<p>Operation rejected.</p><p><a href='/'>← Back to Dashboard</a></p>"
+
+        self._send_html(msg)
+
     def _serve_dashboard(self) -> None:
         runs = get_runs()
         total_ops = 0
@@ -252,7 +346,7 @@ class _DashboardHandler(BaseHTTPRequestHandler):
                 status_cls=status_cls,
             ))
 
-        approval_section = '<div class="empty">No pending approvals</div>'
+        approval_section = _render_approval_queue()
 
         html_content = _DASHBOARD_HTML.format(
             total_runs=len(runs),

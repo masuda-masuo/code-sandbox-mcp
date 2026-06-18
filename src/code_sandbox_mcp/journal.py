@@ -150,14 +150,18 @@ def record_boundary_crossing(
     operation: str,
     details: str,
     approved: bool | None = None,
+    token: str | None = None,
 ) -> None:
     """Record a boundary-crossing operation.
 
     *approved* is ``None`` when no approval was required (e.g. read-only
     VCS access that only needs journal recording, not token approval).
+
+    *token* is set when the operation enters a pending-approval state
+    and is referenced by subsequent approve/reject entries.
     """
     run_id = get_or_create_run_id(container_id)
-    _append_json({
+    entry: dict[str, Any] = {
         "ts": _utcnow_iso(),
         "run_id": run_id,
         "container_id": container_id,
@@ -165,7 +169,10 @@ def record_boundary_crossing(
         "sub_operation": operation,
         "details": details,
         "approved": approved,
-    })
+    }
+    if token is not None:
+        entry["token"] = token
+    _append_json(entry)
 
 
 def record_file_write(
@@ -250,6 +257,55 @@ def read_journal(
 def get_journal_path() -> str:
     """Return the absolute path to the journal log file."""
     return str(_JOURNAL_PATH)
+
+
+def get_pending_approvals() -> list[dict[str, Any]]:
+    """Return boundary-crossing entries that are awaiting approval.
+
+    An entry with ``approved=None`` is considered pending unless a later
+    entry with the same ``token`` has ``approved`` set to ``True`` or
+    ``False`` (i.e. the approval has already been resolved).
+
+    Returns:
+        List of pending boundary_crossing entries, oldest first.
+    """
+    if not _JOURNAL_PATH.exists():
+        return []
+
+    # First pass: collect all boundary_crossing entries
+    all_entries: list[dict[str, Any]] = []
+    with _lock:
+        with open(_JOURNAL_PATH, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("operation") == "boundary_crossing":
+                    all_entries.append(entry)
+
+    # Second pass: collect tokens that have been resolved
+    resolved_tokens: set[str] = set()
+    for entry in all_entries:
+        if entry.get("approved") is not None:
+            token = entry.get("token")
+            if token:
+                resolved_tokens.add(token)
+
+    # Third pass: keep only pending entries
+    pending: list[dict[str, Any]] = []
+    for entry in all_entries:
+        if entry.get("approved") is not None:
+            continue
+        token = entry.get("token")
+        if token and token in resolved_tokens:
+            continue
+        pending.append(entry)
+
+    return pending
 
 
 def get_runs() -> list[dict[str, Any]]:
