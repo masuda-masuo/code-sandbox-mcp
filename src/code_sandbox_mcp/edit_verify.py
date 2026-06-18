@@ -215,7 +215,7 @@ def _quote_path(path: str) -> str:
 # ---------------------------------------------------------------------------
 
 #: Environment variables to set before running linters/type checkers
-#: inside sandbox containers.  Containers often run as ``nobody`` with
+#: inside sandbox containers.  Containers run as a non-root user with
 #: a read-only ``/``, so cache directories must point to ``/tmp``.
 _SANDBOX_ENV: str = (
     "RUFF_CACHE_DIR=/tmp/.ruff_cache "
