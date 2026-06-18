@@ -51,6 +51,11 @@ def _utcnow_iso() -> str:
 
 
 def _purge_expired() -> None:
+    """Remove expired tokens from the in-memory store.
+
+    呼び出し元は必ず ``_lock`` を獲得していること（本関数は
+    ロック獲得を前提とし、自身ではロックを取得しない）。
+    """
     now = time.monotonic()
     expired = [
         k for k, v in _store.items()

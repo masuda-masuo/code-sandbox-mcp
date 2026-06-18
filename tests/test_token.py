@@ -93,12 +93,14 @@ class TestTokenExpiry:
 
     def test_expired_token_verify_returns_none(self) -> None:
         token = generate_token("git_push", "push", "abc123", "run1", ttl_seconds=0)
-        # Token with TTL=0 expires immediately
-        pending = get_pending_tokens()
-        found = [p for p in pending if p["token"] == token]
-        assert len(found) == 0
+        assert verify_and_consume(token) is None
 
-    def test_expired_token_not_in_pending(self) -> None:
+    def test_expired_token_excluded_from_pending(self) -> None:
+        """TTL切れのトークンが get_pending_tokens から除外されることの確認。
+
+        上の test_expired_token_verify_returns_none とは検証対象が
+        異なる (verify_and_consume vs get_pending_tokens)。
+        """
         token = generate_token("git_push", "push", "abc123", "run1", ttl_seconds=0)
         pending = get_pending_tokens()
         found = [p for p in pending if p["token"] == token]

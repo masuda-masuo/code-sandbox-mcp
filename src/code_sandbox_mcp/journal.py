@@ -273,6 +273,7 @@ def get_pending_approvals() -> list[dict[str, Any]]:
         return []
 
     # First pass: collect all boundary_crossing entries
+    # ジャーナルが肥大化した場合は max_entries で打ち切る等の最適化を検討。
     all_entries: list[dict[str, Any]] = []
     with _lock:
         with open(_JOURNAL_PATH, "r", encoding="utf-8") as f:

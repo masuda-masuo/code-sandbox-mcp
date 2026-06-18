@@ -13,6 +13,7 @@ import json
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Any
+from urllib.parse import unquote
 
 from code_sandbox_mcp.journal import (
     get_pending_approvals,
@@ -193,7 +194,11 @@ def _escape(text: str) -> str:
 
 
 def _render_approval_queue() -> str:
-    """Render the approval queue section of the dashboard."""
+    """Render the approval queue section of the dashboard.
+
+    CSRF 対策は意図的に行っていない。このダッシュボードは localhost
+    限定で動作し、改竄リスクは実質ゼロのため。
+    """
     pending = get_pending_approvals()
     if not pending:
         return '<div class="empty">No pending approvals</div>'
@@ -280,7 +285,6 @@ class _DashboardHandler(BaseHTTPRequestHandler):
         for pair in body.split("&"):
             if "=" in pair:
                 key, val = pair.split("=", 1)
-                from urllib.parse import unquote
                 params[key] = unquote(val)
 
         token = params.get("token", "")

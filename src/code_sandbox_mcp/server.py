@@ -58,7 +58,6 @@ from code_sandbox_mcp.security import (
     validate_image_ref,
 )
 from code_sandbox_mcp.token import (
-    generate_token,
     verify_and_consume,
     reject_token,
     get_pending_tokens,
@@ -1270,6 +1269,8 @@ def sandbox_approval_status() -> str:
         JSON string with a list of pending token objects.
     """
     pending = get_pending_tokens()
+    # created_at と now は同一クロック (time.monotonic()) なので
+    # スリープ/サスペンドの影響を受けず正確な残り時間が計算できる。
     now = time.monotonic()
     for p in pending:
         p["remaining_seconds"] = max(
