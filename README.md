@@ -10,7 +10,7 @@ This MCP routes all AI operations through **disposable Docker containers** with 
 
 | Guarantee | Mechanism |
 |-----------|-----------|
-| Host is never touched | All file ops, package installs, and test runs happen inside the container. If the AI breaks something — delete the container and move on. |
+| AI operations never touch the host | All file ops, package installs, and test runs happen inside the container. If the AI breaks something — delete the container and move on. |
 | No network by default | `allow_network=True` must be explicitly set. AI can't accidentally call external APIs, download payloads, or push to remotes. |
 | Non-root execution | Container runs as unprivileged user `sandbox`. No `sudo`, no system package modification. |
 | VCS token opt-in | `GITHUB_TOKEN` is injected only when `inject_vcs_token=True` is set. Even then, token values are masked in all output (`KEY=***`). |
