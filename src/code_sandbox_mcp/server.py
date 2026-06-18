@@ -1826,11 +1826,12 @@ def submit(
             ).decode("ascii")
             pr_cmd = (
                 f"BODY_FILE=$(mktemp) &&"
-                f" echo {shlex.quote(body_encoded)} | base64 -d > $BODY_FILE &&"
+                f" echo {shlex.quote(body_encoded)} | base64 -d > \"$BODY_FILE\" &&"
                 f" gh pr create --repo {shlex.quote(repo)}"
                 f" --head {shlex.quote(branch)}"
                 f" --title {shlex.quote(pr_title)}"
-                f" --body-file $BODY_FILE"
+                f" --body-file \"$BODY_FILE\""
+                f"; rm -f \"$BODY_FILE\""
             )
         else:
             pr_cmd += " --body ''"

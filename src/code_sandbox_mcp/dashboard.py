@@ -432,13 +432,15 @@ class _DashboardHandler(BaseHTTPRequestHandler):
                 if sub_op == "issue_view":
                     details = f'<span style="color:#a5d6ff">issue_view</span> {_escape(detail_text)}'
                 elif sub_op == "submit":
-                    # Make PR URLs clickable
                     formatted = _escape(detail_text)
                     for word in detail_text.split():
-                        if word.startswith("https://github.com/"):
+                        idx = word.find("https://github.com/")
+                        if idx != -1:
+                            url = word[idx:]
+                            escaped_url = _escape(url)
                             formatted = formatted.replace(
-                                _escape(word),
-                                f'<a href="{_escape(word)}" style="color:#58a6ff">{_escape(word)}</a>'
+                                escaped_url,
+                                f'<a href="{escaped_url}" style="color:#58a6ff">{escaped_url}</a>'
                             )
                     details = f'<span style="color:#ffa657">submit</span> {formatted}'
                 else:
