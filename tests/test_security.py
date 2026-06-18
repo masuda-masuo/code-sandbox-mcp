@@ -28,7 +28,7 @@ class TestSecurityProfile:
     """Tests for SecurityProfile dataclass defaults."""
 
     def test_default_profile_non_root_user(self) -> None:
-        assert DEFAULT_SECURITY_PROFILE.user == "nobody"
+        assert DEFAULT_SECURITY_PROFILE.user == "sandbox"
 
     def test_default_profile_forbid_privileged(self) -> None:
         assert DEFAULT_SECURITY_PROFILE.forbid_privileged is True
@@ -132,14 +132,14 @@ class TestBuildSecureRunKwargs:
 
     def test_non_root_user_applied(self) -> None:
         result = build_secure_run_kwargs(DEFAULT_SECURITY_PROFILE)
-        assert result["user"] == "nobody"
+        assert result["user"] == "sandbox"
 
     def test_non_root_user_overrides_existing(self) -> None:
         """Even if someone passes user='root', it gets overwritten."""
         result = build_secure_run_kwargs(
             DEFAULT_SECURITY_PROFILE, user="root"
         )
-        assert result["user"] == "nobody"
+        assert result["user"] == "sandbox"
 
     def test_privileged_mode_rejected(self) -> None:
         with pytest.raises(ValueError, match="Privileged mode"):
@@ -153,7 +153,7 @@ class TestBuildSecureRunKwargs:
             DEFAULT_SECURITY_PROFILE, privileged=False
         )
         # Should not raise, but user should still be set
-        assert result["user"] == "nobody"
+        assert result["user"] == "sandbox"
 
     @pytest.mark.parametrize(
         "volumes",

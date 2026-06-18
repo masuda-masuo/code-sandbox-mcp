@@ -67,7 +67,7 @@ from code_sandbox_mcp.security import (
 #:
 #: Uses the pre-built sandbox image (``docker/Dockerfile.sandbox``) which
 #: includes git/gh/uv/ripgrep/ruff/pyright/semgrep and runs as the
-#: dedicated ``sandbox`` user (not ``nobody``).
+#: dedicated ``sandbox`` user (non-root).
 #:
 #: **このフィールドは直接編集しないこと。**
 #: ``docker/Dockerfile.sandbox`` を変更すると CI
