@@ -83,6 +83,8 @@ button:hover {{ opacity: 0.8; }}
     <div class="val">{total_ops}</div>
     <div class="meta" style="margin-top:8px">Boundary Crossings</div>
     <div class="val">{boundary_count}</div>
+    <div class="meta" style="margin-top:8px">VCS Operations (issue_view / submit)</div>
+    <div class="val">{vcs_ops}</div>
   </div>
 
   <div class="card">
@@ -156,6 +158,8 @@ tr:hover {{ background: #161b22; }}
 .op.boundary_crossing {{ color: #ffa657; }}
 .op.write_file {{ color: #d2a8ff; }}
 .op.copy_project, .op.copy_file {{ color: #a5d6ff; }}
+.op.issue_view {{ color: #a5d6ff; }}
+.op.submit {{ color: #ffa657; }}
 .crossing {{ color: #ffa657; font-weight: 600; }}
 .exit-ok {{ color: #7ee787; }}
 .exit-err {{ color: #f97583; }}
@@ -321,9 +325,11 @@ class _DashboardHandler(BaseHTTPRequestHandler):
         runs = get_runs()
         total_ops = 0
         boundary_count = 0
+        vcs_ops = 0
         for r in runs:
             total_ops += r.get("operations", 0)
             boundary_count += r.get("boundary_crossings", 0)
+            vcs_ops += r.get("vcs_operations", 0)
 
         journal_entries = 0
         jp = get_journal_path()
@@ -356,6 +362,7 @@ class _DashboardHandler(BaseHTTPRequestHandler):
             total_runs=len(runs),
             total_ops=total_ops,
             boundary_count=boundary_count,
+            vcs_ops=vcs_ops,
             journal_path=str(get_journal_path()),
             journal_entries=journal_entries,
             run_rows="\n".join(run_rows_parts) if run_rows_parts else '<tr><td colspan="7" class="empty">No runs recorded</td></tr>',
@@ -422,7 +429,22 @@ class _DashboardHandler(BaseHTTPRequestHandler):
                 ec_cls = "exit-ok" if ec == 0 else "exit-err"
                 details = f'<span class="cmds">{_escape(cmds)}</span> <span class="{ec_cls}">exit={ec}</span>'
             elif op == "boundary_crossing":
-                details = _escape(e.get("sub_operation", "")) + " " + _escape(e.get("details", ""))
+                sub_op = e.get("sub_operation", "")
+                detail_text = e.get("details", "")
+                if sub_op == "issue_view":
+                    details = f'<span style="color:#a5d6ff">issue_view</span> {_escape(detail_text)}'
+                elif sub_op == "submit":
+                    # Make PR URLs clickable
+                    formatted = _escape(detail_text)
+                    for word in detail_text.split():
+                        if word.startswith("https://github.com/"):
+                            formatted = formatted.replace(
+                                _escape(word),
+                                f'<a href="{_escape(word)}" style="color:#58a6ff">{_escape(word)}</a>'
+                            )
+                    details = f'<span style="color:#ffa657">submit</span> {formatted}'
+                else:
+                    details = _escape(sub_op) + " " + _escape(detail_text)
             elif op == "write_file":
                 details = f'{_escape(e.get("file_name",""))} → {_escape(e.get("dest_dir",""))} ({e.get("byte_count",0)} bytes)'
             elif op in ("copy_project", "copy_file"):
