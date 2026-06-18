@@ -264,10 +264,7 @@ def _search_lexical(
     quoted_pattern = shlex.quote(pattern)
     quoted_path = shlex.quote(path)
 
-    cmd = (
-        f"rg --json -n {quoted_pattern} {quoted_path} "
-        f"-I 2>/dev/null || true"
-    )
+    cmd = f"rg --json -n {quoted_pattern} {quoted_path} -I 2>/dev/null"
     exit_code, output = container.exec_run(
         ["/bin/sh", "-c", cmd],
         stdout=True,
@@ -275,6 +272,14 @@ def _search_lexical(
     )
     if exit_code == 127:
         return _grep_fallback(container, pattern, path, max_results)
+    if exit_code not in (0, 1):
+        stdout_part, stderr_part = (
+            output if isinstance(output, tuple) else (output, b"")
+        )
+        stderr_text = (
+            stderr_part.decode("utf-8", errors="replace") if stderr_part else ""
+        )
+        return [{"error": f"ripgrep failed (exit {exit_code}): {stderr_text}"}]
 
     stdout_part, _ = output if isinstance(output, tuple) else (output, b"")
     raw = stdout_part.decode("utf-8", errors="replace") if stdout_part else ""
@@ -291,7 +296,7 @@ def _grep_fallback(
     quoted_pattern = shlex.quote(pattern)
     quoted_path = shlex.quote(path)
 
-    cmd = f"grep -rnI {quoted_pattern} {quoted_path} 2>/dev/null || true"
+    cmd = f"grep -rnI {quoted_pattern} {quoted_path} 2>/dev/null"
     exit_code, output = container.exec_run(
         ["/bin/sh", "-c", cmd],
         stdout=True,
@@ -299,6 +304,14 @@ def _grep_fallback(
     )
     if exit_code == 127:
         return [{"error": "Neither ripgrep (rg) nor grep found in container"}]
+    if exit_code not in (0, 1):
+        stdout_part, stderr_part = (
+            output if isinstance(output, tuple) else (output, b"")
+        )
+        stderr_text = (
+            stderr_part.decode("utf-8", errors="replace") if stderr_part else ""
+        )
+        return [{"error": f"grep failed (exit {exit_code}): {stderr_text}"}]
 
     stdout_part, _ = output if isinstance(output, tuple) else (output, b"")
     raw = stdout_part.decode("utf-8", errors="replace") if stdout_part else ""
@@ -315,7 +328,7 @@ def _search_structural(
     quoted_pattern = shlex.quote(pattern)
     quoted_path = shlex.quote(path)
 
-    cmd = f"sg run -p {quoted_pattern} {quoted_path} --json=stream 2>/dev/null || true"
+    cmd = f"sg run -p {quoted_pattern} {quoted_path} --json=stream 2>/dev/null"
     exit_code, output = container.exec_run(
         ["/bin/sh", "-c", cmd],
         stdout=True,
@@ -323,6 +336,14 @@ def _search_structural(
     )
     if exit_code == 127:
         return [{"error": "ast-grep (sg) not found in container"}]
+    if exit_code not in (0, 1):
+        stdout_part, stderr_part = (
+            output if isinstance(output, tuple) else (output, b"")
+        )
+        stderr_text = (
+            stderr_part.decode("utf-8", errors="replace") if stderr_part else ""
+        )
+        return [{"error": f"ast-grep failed (exit {exit_code}): {stderr_text}"}]
 
     stdout_part, _ = output if isinstance(output, tuple) else (output, b"")
     raw = stdout_part.decode("utf-8", errors="replace") if stdout_part else ""
