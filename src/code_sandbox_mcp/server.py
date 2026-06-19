@@ -6,6 +6,7 @@ This module defines the FastMCP server and all tool handlers.
 from __future__ import annotations
 
 import argparse
+import difflib
 import io
 import json
 import logging
@@ -683,6 +684,158 @@ def sandbox_stop(container_id: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# write_file_sandbox  --  old_str helper functions
+# ---------------------------------------------------------------------------
+
+
+def _find_all_matches(text: str, pattern: str) -> list[tuple[int, int]]:
+    """Find all non-overlapping occurrences of *pattern* in *text*.
+
+    Returns a list of ``(offset, line_number)`` tuples.
+    """
+    matches: list[tuple[int, int]] = []
+    idx = 0
+    while True:
+        idx = text.find(pattern, idx)
+        if idx == -1:
+            break
+        line_no = text[:idx].count("\n") + 1
+        matches.append((idx, line_no))
+        idx += 1
+    return matches
+
+
+def _get_line_indent(line: str) -> int:
+    """Return the leading whitespace length of *line*."""
+    return len(line) - len(line.lstrip())
+
+
+def _reindent_lines(lines: list[str], delta: int) -> list[str]:
+    """Apply an indentation *delta* (number of spaces) to each line.
+
+    Empty/whitespace-only lines are passed through unchanged.
+    A positive *delta* adds leading spaces; a negative *delta* removes them.
+    """
+    result: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            result.append("")
+            continue
+        if delta >= 0:
+            result.append(" " * delta + line)
+        else:
+            remove = min(-delta, _get_line_indent(line))
+            result.append(line[remove:])
+    return result
+
+
+def _try_whitespace_flexible(
+    existing: str, old_str: str, new_str: str,
+) -> str | None:
+    """Attempt whitespace-flexible matching.
+
+    Strips leading/trailing whitespace from each line of *old_str* and
+    slides over the file looking for a block whose stripped lines match.
+    When found the file's original indentation is preserved and *new_str*
+    is re-indented to fit.
+
+    Returns the new file content on success, or ``None`` if no match
+    was found.
+    """
+    existing_lines = existing.splitlines()
+    old_lines = old_str.splitlines()
+    old_stripped = [line.strip() for line in old_lines]
+
+    if len(old_lines) > len(existing_lines):
+        return None
+
+    matches: list[int] = []
+    for i in range(len(existing_lines) - len(old_lines) + 1):
+        chunk = existing_lines[i : i + len(old_lines)]
+        if [line.strip() for line in chunk] == old_stripped:
+            matches.append(i)
+
+    if not matches:
+        return None
+
+    if len(matches) > 1:
+        line_nos = ", ".join(str(m + 1) for m in matches[:10])
+        suffix = "..." if len(matches) > 10 else ""
+        return (
+            f"Error: old_str matches at {len(matches)} locations "
+            f"(lines {line_nos}{suffix}) after whitespace normalization. "
+            "Add more surrounding context to make it unique."
+        )
+
+    i = matches[0]
+    chunk = existing_lines[i : i + len(old_lines)]
+    file_first_indent = _get_line_indent(chunk[0])
+    old_first_indent = _get_line_indent(old_lines[0])
+    delta = file_first_indent - old_first_indent
+    reindented = _reindent_lines(new_str.splitlines(), delta)
+    new_content = "\n".join(reindented)
+
+    # Build character offsets to do a string-level replacement
+    # (preserves trailing whitespace and file structure).
+    pos = 0
+    line_starts: list[int] = []
+    for line in existing_lines:
+        line_starts.append(pos)
+        pos += len(line) + 1  # +1 for newline
+    # offset right after the last matched line
+    start_offset = line_starts[i]
+    end_idx = i + len(old_lines)
+    if end_idx < len(line_starts):
+        end_offset = line_starts[end_idx]
+    else:
+        end_offset = len(existing)
+
+    result = existing[:start_offset] + new_content + existing[end_offset:]
+    if existing.endswith("\n") and not result.endswith("\n"):
+        result += "\n"
+    return result
+
+
+def _build_near_miss_echo(existing: str, old_str: str, dest_path: str) -> str:
+    """Build a near-miss error message with the most similar file region.
+
+    Uses :mod:`difflib` to locate the area that best matches *old_str*
+    and shows it with line numbers as context for the caller.
+    """
+    existing_lines = existing.splitlines()
+
+    sm = difflib.SequenceMatcher(None, existing, old_str)
+    match = sm.find_longest_match(0, len(existing), 0, len(old_str))
+
+    lines_to_show: list[str] = []
+
+    if match.size >= max(5, len(old_str) * 0.3):
+        match_line = existing[: match.a].count("\n") + 1
+        match_end = existing[match.a : match.a + match.size].count("\n") + match_line
+
+        ctx_start = max(0, match_line - 4)
+        ctx_end = min(len(existing_lines), match_end + 3)
+
+        for i in range(ctx_start, ctx_end):
+            prefix = ">>>" if match_line - 1 <= i < match_end else "   "
+            lines_to_show.append(f"{prefix} {i + 1:4d} | {existing_lines[i]}")
+    else:
+        for i in range(min(8, len(existing_lines))):
+            lines_to_show.append(f"    {i + 1:4d} | {existing_lines[i]}")
+
+    context_block = "\n".join(lines_to_show)
+
+    return (
+        f"Error: old_str not found in {dest_path}.\n"
+        f"Most relevant file area:\n"
+        f"{context_block}\n"
+        "Tip: Use read_file_range first to confirm the exact content "
+        "(including whitespace)."
+    )
+
+
+# ---------------------------------------------------------------------------
 # write_file_sandbox
 # ---------------------------------------------------------------------------
 
@@ -712,8 +865,18 @@ def write_file_sandbox(
     Appends *file_contents* to the end of the existing file.
 
     **Replace** (*old_str*):
-    Replaces the *first* occurrence of *old_str* in the existing file with
-    *file_contents*.  Returns an error if *old_str* is not found.
+    Replaces *old_str* with *file_contents*.  The matching logic is:
+
+    1. **Exact match** -- if *old_str* appears exactly once, it is replaced.
+       If it appears multiple times the call is rejected with the line numbers
+       of each match so the caller can add more surrounding context.
+    2. **Whitespace-flexible fallback** -- if exact matching fails, leading
+       and trailing whitespace is stripped from each line and the search is
+       retried.  On success *file_contents* is re-indented to match the
+       file's original indentation.
+    3. **Near-miss echo** -- if neither strategy finds a match, the most
+       similar region of the file is returned with line numbers via
+       :func:`difflib.SequenceMatcher`.
 
     *start_line* / *end_line*, *append*, and *old_str* are mutually exclusive.
     When none of them is specified the file is fully overwritten (original
@@ -776,10 +939,35 @@ def write_file_sandbox(
             sep = "\n" if existing else ""
             content = existing.rstrip("\n") + sep + file_contents
         elif old_str is not None:
-            idx = existing.find(old_str)
-            if idx == -1:
-                return f"Error: old_str not found in {dest_path}"
-            content = existing[:idx] + file_contents + existing[idx + len(old_str) :]
+            # 1. Exact match with uniqueness check
+            exact_matches = _find_all_matches(existing, old_str)
+            if len(exact_matches) > 1:
+                line_nos = ", ".join(str(m[1]) for m in exact_matches[:10])
+                suffix = "..." if len(exact_matches) > 10 else ""
+                return (
+                    f"Error: old_str matches at {len(exact_matches)} locations "
+                    f"(lines {line_nos}{suffix}). "
+                    "Add more surrounding context to make it unique."
+                )
+            if len(exact_matches) == 1:
+                idx = exact_matches[0][0]
+                content = (
+                    existing[:idx]
+                    + file_contents
+                    + existing[idx + len(old_str) :]
+                )
+            else:
+                # 2. Whitespace-flexible fallback
+                result = _try_whitespace_flexible(
+                    existing, old_str, file_contents,
+                )
+                if result is not None:
+                    if result.startswith("Error:"):
+                        return result
+                    content = result
+                else:
+                    # 3. Near-miss echo
+                    return _build_near_miss_echo(existing, old_str, dest_path)
         else:
             start = start_line - 1 if start_line is not None else 0
             end = end_line if end_line is not None else len(existing_lines)

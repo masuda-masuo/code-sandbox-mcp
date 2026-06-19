@@ -347,7 +347,7 @@ class TestWriteFileSandboxReplace:
 
     @patch("code_sandbox_mcp.server._docker")
     def test_replace_first_occurrence(self, mock_docker: MagicMock) -> None:
-        """old_str replaces the first occurrence only."""
+        """old_str replaces a unique occurrence (exact match)."""
         existing = "hello world, hello universe\n"
         mock_container = self._mock_container_with_file(
             mock_docker, existing,
@@ -358,11 +358,11 @@ class TestWriteFileSandboxReplace:
             file_name="test.txt",
             file_contents="GOODBYE",
             dest_dir="/root",
-            old_str="hello",
+            old_str="hello world",
         )
         assert "Error" not in result
         assert "Written" in result
-        assert _get_written_content(mock_container) == "GOODBYE world, hello universe\n"
+        assert _get_written_content(mock_container) == "GOODBYE, hello universe\n"
 
     @patch("code_sandbox_mcp.server._docker")
     def test_replace_multi_line(self, mock_docker: MagicMock) -> None:
@@ -414,6 +414,149 @@ class TestWriteFileSandboxReplace:
         )
         assert "Error" in result
         assert "must not be empty" in result
+
+
+class TestWriteFileSandboxReplaceEnhanced:
+    """Tests for enhanced old_str mode (issue #90)."""
+
+    def _mock_container_with_file(
+        self, mock_docker: MagicMock, content: str,
+    ) -> MagicMock:
+        content_bytes = content.encode("utf-8") if content else b""
+        mock_container = MagicMock()
+        mock_container.exec_run.side_effect = [
+            (0, (content_bytes, b"")),
+            (0, (b"", b"")),
+        ]
+        mock_client = MagicMock()
+        mock_client.containers.get.return_value = mock_container
+        mock_docker.return_value = mock_client
+        return mock_container
+
+    # --- uniqueness check ---
+
+    @patch("code_sandbox_mcp.server._docker")
+    def test_multiple_exact_matches_error(self, mock_docker: MagicMock) -> None:
+        """Multiple exact matches are rejected with line numbers."""
+        existing = "hello\nworld\nhello\n"
+        self._mock_container_with_file(mock_docker, existing)
+
+        result = write_file_sandbox(
+            container_id="abc123",
+            file_name="test.txt",
+            file_contents="HI",
+            dest_dir="/root",
+            old_str="hello",
+        )
+        assert "Error" in result
+        assert "matches at 2 locations" in result
+        assert "lines 1, 3" in result
+        assert "unique" in result.lower()
+
+    @patch("code_sandbox_mcp.server._docker")
+    def test_single_exact_match_still_works(self, mock_docker: MagicMock) -> None:
+        """A single exact match succeeds (backward compat)."""
+        existing = "line1\nline2\nline3\n"
+        mock_container = self._mock_container_with_file(
+            mock_docker, existing,
+        )
+
+        result = write_file_sandbox(
+            container_id="abc123",
+            file_name="test.txt",
+            file_contents="REPLACED",
+            dest_dir="/root",
+            old_str="line2",
+        )
+        assert "Error" not in result
+        assert "Written" in result
+        assert _get_written_content(mock_container) == "line1\nREPLACED\nline3\n"
+
+    # --- whitespace-flexible fallback ---
+
+    @patch("code_sandbox_mcp.server._docker")
+    def test_whitespace_mismatch_fallback(self, mock_docker: MagicMock) -> None:
+        """Whitespace difference is tolerated via fallback."""
+        existing = "    def foo():\n        pass\n"
+        # old_str has fewer leading spaces
+        mock_container = self._mock_container_with_file(
+            mock_docker, existing,
+        )
+
+        result = write_file_sandbox(
+            container_id="abc123",
+            file_name="test.txt",
+            file_contents="def bar():",
+            dest_dir="/root",
+            old_str="def foo():",
+        )
+        assert "Error" not in result
+        assert "Written" in result
+        # new_str should be re-indented to match file's indentation
+        assert _get_written_content(mock_container) == "    def bar():\n        pass\n"
+
+    @patch("code_sandbox_mcp.server._docker")
+    def test_whitespace_flexible_multiple_matches(
+        self, mock_docker: MagicMock,
+    ) -> None:
+        """Whitespace-flexible match that finds duplicates is rejected."""
+        # Use different indentation so exact match fails but
+        # whitespace-flexible succeeds (and finds duplicates).
+        existing = "  hello\n  world\n\thello\n"
+        self._mock_container_with_file(mock_docker, existing)
+
+        result = write_file_sandbox(
+            container_id="abc123",
+            file_name="test.txt",
+            file_contents="HI",
+            dest_dir="/root",
+            old_str="    hello",
+        )
+        assert "Error" in result
+        assert "matches at 2 locations" in result
+        assert "whitespace normalization" in result.lower()
+
+    @patch("code_sandbox_mcp.server._docker")
+    def test_whitespace_flexible_trailing(self, mock_docker: MagicMock) -> None:
+        """Trailing whitespace is ignored in flexible match."""
+        existing = "  hello world  \n  next line\n"
+        mock_container = self._mock_container_with_file(
+            mock_docker, existing,
+        )
+
+        result = write_file_sandbox(
+            container_id="abc123",
+            file_name="test.txt",
+            file_contents="goodbye",
+            dest_dir="/root",
+            old_str="hello world  ",
+        )
+        assert "Error" not in result
+        assert "Written" in result
+        # Trailing whitespace is stripped for matching; replacement uses
+        # file's leading indentation only (trailing spaces are not preserved).
+        assert _get_written_content(mock_container) == "  goodbye\n  next line\n"
+
+    # --- near-miss echo ---
+
+    @patch("code_sandbox_mcp.server._docker")
+    def test_near_miss_shows_context(self, mock_docker: MagicMock) -> None:
+        """When old_str is not found, near-miss context is returned."""
+        existing = "def foo():\n    pass\n\ndef bar():\n    pass\n"
+        self._mock_container_with_file(mock_docker, existing)
+
+        result = write_file_sandbox(
+            container_id="abc123",
+            file_name="test.txt",
+            file_contents="new",
+            dest_dir="/root",
+            old_str="def baz():",
+        )
+        assert "Error" in result
+        assert "not found" in result
+        # Should show most similar area
+        assert "Most relevant file area:" in result
+        assert "def foo" in result or "def bar" in result
 
 
 class TestWriteFileSandboxMutualExclusivity:
