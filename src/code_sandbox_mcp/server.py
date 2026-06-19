@@ -29,6 +29,7 @@ from code_sandbox_mcp import RESTART_EXIT_CODE
 from code_sandbox_mcp.edit_verify import (
     apply_patch_to_file,
     lint_file,
+    read_file,
     read_file_lines,
     run_verify,
     search_files,
@@ -756,24 +757,13 @@ def write_file_sandbox(
 
     # For partial updates, read existing content
     if append or old_str is not None or has_line_range:
-        # Check file exists
-        exit_code, output = container.exec_run(
-            ["/bin/sh", "-c", f"test -f {shlex.quote(dest_path)}"],
-            stdout=True,
-            stderr=True,
-        )
-        if exit_code != 0:
+        try:
+            existing = read_file(container, dest_path)
+        except ValueError as e:
             return f"Error: file {dest_path} not found"
-
-        # Read existing file
-        exit_code, output = container.exec_run(
-            ["/bin/sh", "-c", f"cat {shlex.quote(dest_path)}"],
-            stdout=True,
-            stderr=True,
-        )
-        stdout_part, _ = output if isinstance(output, tuple) else (output, b"")
-        existing = stdout_part.decode("utf-8", errors="replace") if stdout_part else ""
-        existing_lines = existing.splitlines()
+        existing_lines = existing.split("\n")
+        if existing_lines and existing_lines[-1] == "":
+            existing_lines = existing_lines[:-1]
 
         # Validate bounds
         if start_line is not None and start_line > len(existing_lines):
@@ -795,14 +785,16 @@ def write_file_sandbox(
         else:
             start = start_line - 1 if start_line is not None else 0
             end = end_line if end_line is not None else len(existing_lines)
-            new_lines = file_contents.splitlines()
+            new_lines = file_contents.split("\n")
+            if new_lines and new_lines[-1] == "":
+                new_lines = new_lines[:-1]
             content_lines = existing_lines[:start] + new_lines + existing_lines[end:]
             content = "\n".join(content_lines)
             if file_contents.endswith("\n"):
                 content += "\n"
 
     try:
-        write_file(client, container_id, dest_path, content)
+        write_file(container, container_id[:12], dest_path, content)
     except ValueError as e:
         return f"Error: {e}"
     return f"Written {len(content)} bytes to {dest_path}"
@@ -1286,7 +1278,7 @@ def apply_patch(container_id: str, file_path: str, diff_content: str) -> str:
     """
     client = _docker()
     try:
-        _ = client.containers.get(container_id)
+        container = client.containers.get(container_id)
     except NotFound:
         return f"Error: container {container_id[:12]} not found"
     except Exception as e:
@@ -1330,7 +1322,7 @@ def read_file_range(
         return json.dumps({"error": str(e)})
 
     result = read_file_lines(
-        client, container_id, file_path, offset=offset, limit=limit
+        container, file_path, offset=offset, limit=limit
     )
     return json.dumps(result)
 
