@@ -890,7 +890,8 @@ def write_file_sandbox(
         start_line: Start line for line-range replacement (1-indexed, inclusive).
         end_line: End line for line-range replacement (1-indexed, inclusive).
         append: When True, appends to the end of the file.
-        old_str: When specified, replaces the first occurrence of this string.
+        old_str: When specified, replaces this string in the existing file.
+            Performs uniqueness check, whitespace-flexible fallback, and near-miss echo (see above).
 
     Returns:
         Success or error message.
