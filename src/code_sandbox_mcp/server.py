@@ -483,8 +483,14 @@ def sandbox_exec(
 
     joined = " && ".join(commands)
     encoded = base64.b64encode(joined.encode("utf-8")).decode("ascii")
+    tmpf = f"/tmp/.sx_{os.urandom(4).hex()}.sh"
+    cmd = (
+        f"echo {shlex.quote(encoded)} | base64 -d > {tmpf}"
+        f" && chmod +x {tmpf}"
+        f" && {tmpf}"
+    )
     exit_code, output = container.exec_run(
-        ["/bin/sh", "-c", f"echo {shlex.quote(encoded)} | base64 -d | /bin/sh"],
+        ["/bin/sh", "-c", cmd],
         stdout=True,
         stderr=True,
         demux=True,
@@ -570,7 +576,12 @@ def sandbox_exec_background(container_id: str, commands: list[str]) -> str:
     job_id = f"{container_id}-{int(time.time())}"
     joined = " && ".join(commands)
     encoded = base64.b64encode(joined.encode("utf-8")).decode("ascii")
-    inner_cmd = f"echo {shlex.quote(encoded)} | base64 -d | /bin/sh"
+    tmpf = f"/tmp/.sx_{os.urandom(4).hex()}.sh"
+    inner_cmd = (
+        f"echo {shlex.quote(encoded)} | base64 -d > {tmpf}"
+        f" && chmod +x {tmpf}"
+        f" && {tmpf}"
+    )
     bg_cmd = (
         f"nohup /bin/sh -c {shlex.quote(inner_cmd)} "
         f"> /tmp/{job_id}.out 2> /tmp/{job_id}.err; "
@@ -1353,8 +1364,14 @@ def run_container_and_exec(
     try:
         joined = " && ".join(commands)
         encoded = base64.b64encode(joined.encode("utf-8")).decode("ascii")
+        tmpf = f"/tmp/.sx_{os.urandom(4).hex()}.sh"
+        cmd = (
+            f"echo {shlex.quote(encoded)} | base64 -d > {tmpf}"
+            f" && chmod +x {tmpf}"
+            f" && {tmpf}"
+        )
         exit_code, output = container.exec_run(
-            ["/bin/sh", "-c", f"echo {shlex.quote(encoded)} | base64 -d | /bin/sh"],
+            ["/bin/sh", "-c", cmd],
             stdout=True,
             stderr=True,
             demux=True,
