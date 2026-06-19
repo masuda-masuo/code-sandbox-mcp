@@ -27,6 +27,7 @@ from src.code_sandbox_mcp.edit_verify import (
     _parse_semgrep_output,
     _parse_sg_json,
     _parse_tsc_text,
+    read_file_lines,
 )
 
 
@@ -534,6 +535,40 @@ class TestReadFileLines:
         next_offset = offset + limit
         has_more = next_offset < total
         assert has_more is False
+
+    def test_limit_negative_one_reads_all_remaining(self, monkeypatch) -> None:
+        """When limit=-1, reads all lines from offset to end."""
+        monkeypatch.setattr(
+            "src.code_sandbox_mcp.edit_verify.read_file",
+            lambda _c, _p: "a\nb\nc\nd\ne",
+        )
+
+        result = read_file_lines(
+            container=None, file_path="test.txt", offset=1, limit=-1
+        )
+
+        assert result["error"] is None
+        assert result["content"] == "b\nc\nd\ne"
+        assert result["shown"] == 4
+        assert result["has_more"] is False
+        assert result["next_offset"] is None
+
+    def test_limit_negative_one_reads_all_from_start(self, monkeypatch) -> None:
+        """When limit=-1 and offset=0, reads the entire file."""
+        monkeypatch.setattr(
+            "src.code_sandbox_mcp.edit_verify.read_file",
+            lambda _c, _p: "a\nb\nc",
+        )
+
+        result = read_file_lines(
+            container=None, file_path="test.txt", offset=0, limit=-1
+        )
+
+        assert result["error"] is None
+        assert result["content"] == "a\nb\nc"
+        assert result["shown"] == 3
+        assert result["has_more"] is False
+        assert result["next_offset"] is None
 
 
 # ===================================================================
