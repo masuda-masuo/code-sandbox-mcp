@@ -30,7 +30,8 @@ USER sandbox
 WORKDIR /home/sandbox
 RUN pyright --version
 
-# ── ヘルスチェック (python イメージが保有するツール) ──────────HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+# ── ヘルスチェック (python イメージが保有するツール) ──────────────
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD ruff --version && pyright --version && pytest --version && semgrep --version || exit 1
 
 CMD ["bash"]

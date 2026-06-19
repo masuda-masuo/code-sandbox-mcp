@@ -12,7 +12,7 @@
 ARG BASE_IMAGE=code-sandbox-mcp/sandbox:base
 FROM ${BASE_IMAGE}
 
-# ── Go ツールチェーン ───────────────────────────────
+# ── Go ツールチェーン ─────────────────────────────────────────────
 USER root
 ARG TARGETARCH
 ARG GO_VERSION=1.23.4
@@ -37,7 +37,8 @@ ENV GOPATH=/home/sandbox/go \
 USER sandbox
 WORKDIR /home/sandbox
 
-# ── ヘルスチェック (go イメージが保有するツール) ────────────HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+# ── ヘルスチェック (go イメージが保有するツール) ──────────────────
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD go version && rg --version && sg --version && semgrep --version || exit 1
 
 CMD ["bash"]
