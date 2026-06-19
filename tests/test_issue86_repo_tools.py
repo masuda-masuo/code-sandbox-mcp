@@ -158,3 +158,16 @@ class TestListFiles:
 
         result = json.loads(list_files("abc123def456", "/nonexistent"))
         assert "error" in result
+
+    @patch("code_sandbox_mcp.server._docker")
+    def test_list_default_path(self, mock_docker):
+        """Default path is /home/sandbox."""
+        container = _make_container([
+            (0, b"", b""),
+        ])
+        mock_docker.return_value = _make_client(container)
+
+        result = json.loads(list_files("abc123def456"))
+        assert result["path"] == "/home/sandbox"
+        assert result["total"] == 0
+        assert result["files"] == []
