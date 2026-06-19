@@ -1,0 +1,104 @@
+# syntax=docker/dockerfile:1
+# docker/Dockerfile.base
+#
+# Code Sandbox MCP — 共有ベースイメージ（言語非依存インフラ + 横断ランタイム）
+# 公開タグ: ghcr.io/<owner>/code-sandbox-mcp/sandbox:base
+# 用途: backend イメージ（Dockerfile.python / Dockerfile.go）の FROM 元。直接実行も可。
+# ビルド: docker build -f docker/Dockerfile.base -t code-sandbox-mcp/sandbox:base .
+#
+# 設計: docs/design-multilang-support.md §6
+#   方針「横断インフラが依存するランタイムは base へ。言語固有の開発ツール群は backend レイヤへ。」
+#
+# 同梱:
+#   検索(字句)  : ripgrep (rg)
+#   検索(構造)  : ast-grep (sg)
+#   テキスト置換: sd
+#   ファイル検索: fd
+#   シンボル    : universal-ctags
+#   セキュリティ: semgrep        ← 多言語スキャナ（横断インフラ）
+#   VCS         : git, gh
+#   高速install : uv
+#   JSON処理    : jq
+#   ランタイム  : python (base image) / node ← pyright(node アプリ) と将来の js dispatch が依存
+#
+# js 開発ツール (eslint / tsc / jest) は verify の js dispatch（#104 §②/④）と同時に追加する。
+
+FROM python:3.12-slim-bookworm@sha256:93ab4b7fa528b25124c97bcc755415e60eb671a86b4dbe0328df2fe2d1c1193d
+
+# ── システムパッケージ ──────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    unzip \
+    xz-utils \
+    ca-certificates \
+    ripgrep \
+    fd-find \
+    jq \
+    universal-ctags \
+  && rm -rf /var/lib/apt/lists/*
+
+# fd-find は fdfind としてインストールされるので fd にシンボリックリンク
+RUN ln -s /usr/bin/fdfind /usr/local/bin/fd
+
+# ── GitHub CLI (gh) ────────────────────────────────────────────────
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends gh \
+  && rm -rf /var/lib/apt/lists/*
+
+# ── Node.js (横断ランタイム) ─────────────────────────────────────
+# pyright（PyPI ラッパーだが実体は node アプリ）と将来の js dispatch が依存する。
+# base に置くことで pyright の実行時 node 取得バグ（design §1）も解消する。
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+  && apt-get install -y --no-install-recommends nodejs \
+  && rm -rf /var/lib/apt/lists/*
+
+# ── uv (システムワイド) ─────────────────────────────────────────
+RUN curl -LsSf https://astral.sh/uv/install.sh \
+  | env UV_INSTALL_DIR=/usr/local/bin sh
+
+# ── ast-grep (sg) と sd ─────────────────────────────────────────
+ARG TARGETARCH
+ARG AST_GREP_VERSION=0.43.0
+ARG SD_VERSION=1.0.0
+
+RUN set -ex; \
+    case "${TARGETARCH}" in \
+      amd64) \
+        AST_ARCH="x86_64"; \
+        SD_TRIPLE="x86_64-unknown-linux-gnu" ;; \
+      arm64) \
+        AST_ARCH="aarch64"; \
+        SD_TRIPLE="aarch64-unknown-linux-musl" ;; \
+      *) echo "Unsupported arch: ${TARGETARCH}" && exit 1 ;; \
+    esac; \
+    \
+    curl -fsSL "https://github.com/ast-grep/ast-grep/releases/download/${AST_GREP_VERSION}/app-${AST_ARCH}-unknown-linux-gnu.zip" \
+      -o /tmp/ast-grep.zip \
+    && unzip -q /tmp/ast-grep.zip -d /tmp/ast-grep \
+    && mv /tmp/ast-grep/sg /usr/local/bin/sg \
+    && mv /tmp/ast-grep/ast-grep /usr/local/bin/ast-grep \
+    && chmod +x /usr/local/bin/sg /usr/local/bin/ast-grep \
+    && rm -rf /tmp/ast-grep /tmp/ast-grep.zip; \
+    \
+    curl -fsSL "https://github.com/chmln/sd/releases/download/v${SD_VERSION}/sd-v${SD_VERSION}-${SD_TRIPLE}.tar.gz" \
+      | tar -xz -C /usr/local/bin/ --strip-components=1 "sd-v${SD_VERSION}-${SD_TRIPLE}/sd" \
+    && chmod +x /usr/local/bin/sd
+
+# ── semgrep (多言語スキャナ = 横断インフラ。システムワイド) ──────────
+RUN uv pip install --system semgrep
+
+# ── 非 root ユーザ (§2.1 静的ガードレール: 非 root 実行を既定強制) ──
+RUN groupadd -r sandbox && useradd -r -g sandbox -m -d /home/sandbox sandbox
+USER sandbox
+WORKDIR /home/sandbox
+
+# ── ヘルスチェック (base が保有するツールのみ) ────────────────────
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD rg --version && sg --version && semgrep --version && node --version || exit 1
+
+CMD ["bash"]

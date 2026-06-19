@@ -1,0 +1,37 @@
+# syntax=docker/dockerfile:1
+# docker/Dockerfile.python
+#
+# Code Sandbox MCP — Python backend イメージ（base + Python 開発ツール）
+# 公開タグ: ghcr.io/<owner>/code-sandbox-mcp/sandbox:python
+# 設計: docs/design-multilang-support.md §6
+# ビルド:
+#   docker build -f docker/Dockerfile.python \
+#     --build-arg BASE_IMAGE=code-sandbox-mcp/sandbox:base \
+#     -t code-sandbox-mcp/sandbox:python .
+#
+# 運用ではイメージはダイジェスト固定で参照すること (image@sha256:...)。
+# CI は base を先にビルドして digest を確定し、BASE_IMAGE にその digest を渡す。
+
+ARG BASE_IMAGE=code-sandbox-mcp/sandbox:base
+FROM ${BASE_IMAGE}
+
+# ── Python 開発ツール (root でシステムワイド導入 → 全ユーザの PATH に載る) ──
+USER root
+RUN uv pip install --system \
+    ruff \
+    pyright \
+    pytest \
+    pytest-json-report
+
+# ── pyright の node ベース本体を sandbox ユーザのキャッシュに warm up ──
+# pyright は base 同梱の node を使う。ビルド時（ネットワーク可）に一度起動して
+# 本体を取得・キャッシュしておくことで、ネットワーク off 既定の実行時に取りに行かない。
+USER sandbox
+WORKDIR /home/sandbox
+RUN pyright --version
+
+# ── ヘルスチェック (python イメージが保有するツール) ──────────────
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD ruff --version && pyright --version && pytest --version && semgrep --version || exit 1
+
+CMD ["bash"]
