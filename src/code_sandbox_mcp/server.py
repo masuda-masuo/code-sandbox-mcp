@@ -354,6 +354,10 @@ def sandbox_initialize(
     Container IDs are returned as short 12-character prefixes for
     use in other tools.
 
+    **One-step init + clone:** pass ``clone_repo`` to avoid a separate
+    :func:`clone_repo` call.  For a full one-shot workflow with commands,
+    use :func:`run_container_and_exec` which wraps init/exec/stop.
+
     Args:
         image: Docker image to use (e.g. ``python@sha256:...``).
                Defaults to the image specified
@@ -382,6 +386,10 @@ def sandbox_initialize(
         Container ID string (12-character prefix).
         If *clone_repo* is specified, a message about the clone copy
         is appended.
+
+    See also:
+        :func:`run_container_and_exec` — one-shot init + exec + stop.
+        :func:`clone_repo` — clone after container is running.
     """
     client = _docker()
     resolved = image or _DEFAULT_IMAGE
@@ -872,6 +880,17 @@ def write_file_sandbox(
 ) -> str:
     """Write a file to the container. Supports full overwrite and partial updates.
 
+    **Mode selection (pick exactly one):**
+
+    ================= ===================================================
+    Mode              Parameters
+    ================= ===================================================
+    Full overwrite    (none of the below) — writes *file_contents* as-is
+    Line-range        ``start_line`` [+ ``end_line``] — replace lines
+    Append            ``append=True`` — append to existing file
+    String replace    ``old_str`` — replace exact text (see matching below)
+    ================= ===================================================
+
     **Full overwrite** (default, backward compatible):
     Writes *file_contents* as the entire file.
 
@@ -901,6 +920,12 @@ def write_file_sandbox(
     When none of them is specified the file is fully overwritten (original
     behaviour).
 
+    .. hint::
+
+       For large structural edits, prefer :func:`apply_patch` (diff-based)
+       to avoid sending the full file.  Use :func:`read_file_range` first
+       to inspect the target area before editing.
+
     Args:
         container_id: 12-character container ID prefix.
         file_name: Name of the file to write.
@@ -914,6 +939,10 @@ def write_file_sandbox(
 
     Returns:
         Success or error message.
+
+    See also:
+        :func:`apply_patch` — diff-based editing for large changes.
+        :func:`read_file_range` — inspect file content before editing.
     """
     client = _docker()
     try:
@@ -1023,6 +1052,12 @@ def copy_project(
     The target directory inside the tar archive is named after the
     source directory itself (i.e. ``/home/sandbox/source_dir_name/...``).
 
+    .. hint::
+
+       For Git repositories already cloned locally, prefer
+       :func:`sandbox_initialize` with ``clone_repo`` — it copies
+       a pre-cloned repo without network overhead.
+
     Args:
         container_id: 12-character container ID prefix.
         local_src_dir: Path to the local directory to copy.
@@ -1031,6 +1066,10 @@ def copy_project(
 
     Returns:
         Success or error message.
+
+    See also:
+        :func:`clone_repo` — clone a remote Git repo inside the container.
+        :func:`copy_file` — copy a single file instead of a directory.
     """
     client = _docker()
     try:
@@ -1481,6 +1520,13 @@ def apply_patch(container_id: str, file_path: str, diff_content: str) -> str:
     instead of the full file content, reducing token cost by 1-2 orders
     of magnitude.
 
+    .. hint::
+
+       For simple string replacements use :func:`write_file_sandbox`
+       with ``old_str`` instead — it avoids ``@@`` header errors.
+       For full file rewrites use :func:`write_file_sandbox` without
+       partial-mode arguments.
+
     Args:
         container_id: 12-character container ID prefix.
         file_path: Path to the file inside the container.
@@ -1488,6 +1534,10 @@ def apply_patch(container_id: str, file_path: str, diff_content: str) -> str:
 
     Returns:
         Success message or error description.
+
+    See also:
+        :func:`write_file_sandbox` — full overwrite / line-range /
+        append / string-replace modes.
     """
     client = _docker()
     try:
@@ -1516,6 +1566,11 @@ def read_file_range(
     - ``has_more`` (bool): whether more lines exist after this range
     - ``next_offset`` (int | None): offset for pagination
 
+    .. hint::
+
+       Use ``limit=-1`` to read all remaining lines from *offset*
+       to end of file in one call.
+
     Args:
         container_id: 12-character container ID prefix.
         file_path: Path to the file inside the container.
@@ -1526,6 +1581,11 @@ def read_file_range(
     Returns:
         JSON string with file content and metadata, or an error
         message beginning with ``"Error:"``.
+
+    See also:
+        :func:`search_in_container` — find content across files with
+        ripgrep/ast-grep.
+        :func:`write_file_sandbox` — edit files after inspection.
     """
     client = _docker()
     try:
@@ -1686,9 +1746,10 @@ def verify_in_container(
 ) -> str:
     """Run lint + type_check + test + scan as a bundled verification.
 
-    Executes all four analysis layers inside the container in a single
-    call, normalises output to a unified schema, and returns a gate
-    decision.
+    **Use this instead of calling** :func:`lint_in_container` **,**
+    :func:`type_check_in_container` **, and pytest separately.**
+    A single call runs all four analysis layers, normalises output,
+    and returns a gate decision.
 
     Supports multi-language verification (Python / JS / TS / Go) with
     language-aware dispatch.  Auto-detects project language from *path*
@@ -2352,6 +2413,12 @@ def clone_repo(
     Requires a container started with ``allow_network=True`` and
     ``inject_vcs_token=True`` for private repositories.
 
+    .. hint::
+
+       To avoid the two-step "init → clone" workflow, use
+       :func:`sandbox_initialize` with ``clone_repo`` — it starts
+       the container and copies a pre-cloned Shiori repo in one call.
+
     Args:
         container_id: 12-character container ID prefix.
         repo: Repository in ``"owner/repo"`` format.
@@ -2362,6 +2429,10 @@ def clone_repo(
     Returns:
         JSON string with ``status``, ``repo``, ``clone_path``, and
         ``branch``.  On error returns an ``error`` field.
+
+    See also:
+        :func:`sandbox_initialize` — one-step init + clone with
+        ``clone_repo`` parameter.
     """
     client = _docker()
     try:
