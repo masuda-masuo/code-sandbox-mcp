@@ -97,7 +97,7 @@ class TestSetupPrBranch:
 
         assert "PR #136" in result
         mock_logger.warning.assert_called_once()
-        assert "pip install dev deps failed" in mock_logger.warning.call_args[0][0]
+        assert "pip install deps failed" in mock_logger.warning.call_args[0][0]
 
     def test_invalid_json_from_gh(self):
         container = _make_container_mock([
@@ -263,7 +263,7 @@ class TestRunContainerAndExecPrParam:
 
         assert result["status"] == "ok"
         mock_setup.assert_called_once_with(
-            mock_container, "abc123def456", "owner/repo", 136, "/tmp/repo",
+            mock_container, "abc123def456", "owner/repo", 136, "/tmp/repo", "[dev]",
         )
 
     @patch("code_sandbox_mcp.server._docker")
@@ -315,3 +315,113 @@ class TestRunContainerAndExecPrParam:
 
         assert result["status"] == "ok"
         assert result["pr_warning"] == "network error"
+
+
+
+class TestPipExtrasParam:
+    """Tests for pip_extras parameter customization."""
+
+    def test_custom_pip_extras(self):
+        container = _make_container_mock([
+            (0, (_PR_INFO_JSON.encode(), b"")),
+            (0, (b"Cloned\n", b"")),
+            (0, (b"Switched\n", b"")),
+            (0, (b"Installed\n", b"")),
+        ])
+
+        with patch("code_sandbox_mcp.server.logger"):
+            result = _setup_pr_branch(
+                container, "abc123def456", "owner/repo", 136, "/tmp/repo",
+                pip_extras="[testing]",
+            )
+
+        assert "PR #136" in result
+
+    def test_pip_extras_none_skips_install(self):
+        # 3 exec calls: gh view, clone, checkout. No pip install.
+        container = _make_container_mock([
+            (0, (_PR_INFO_JSON.encode(), b"")),
+            (0, (b"Cloned\n", b"")),
+            (0, (b"Switched\n", b"")),
+        ])
+
+        with patch("code_sandbox_mcp.server.logger"):
+            result = _setup_pr_branch(
+                container, "abc123def456", "owner/repo", 136, "/tmp/repo",
+                pip_extras=None,
+            )
+
+        assert "PR #136" in result
+        # Should be exactly 3 exec calls (no pip install)
+        assert container.exec_run.call_count == 3
+
+
+class TestCloneRepoPrInteraction:
+    """Tests for clone_repo + pr interaction."""
+
+    @patch("code_sandbox_mcp.server._docker")
+    @patch("code_sandbox_mcp.server._container_env")
+    @patch("code_sandbox_mcp.server._ensure_image")
+    @patch("code_sandbox_mcp.server.validate_image_ref")
+    @patch("code_sandbox_mcp.server._setup_pr_branch")
+    @patch("code_sandbox_mcp.server._clone_shiori_repo_to_container")
+    def test_clone_repo_skipped_when_pr_set(
+        self,
+        mock_clone_shiori: MagicMock,
+        mock_setup: MagicMock,
+        mock_validate: MagicMock,
+        mock_ensure_image: MagicMock,
+        mock_container_env: MagicMock,
+        mock_docker: MagicMock,
+    ):
+        mock_container = MagicMock()
+        mock_container.id = "abc123def456"
+        mock_client = MagicMock()
+        mock_client.containers.run.return_value = mock_container
+        mock_docker.return_value = mock_client
+        mock_setup.return_value = "PR #136 setup done"
+        mock_container_env.return_value = {}
+
+        sandbox_initialize(
+            image="python@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            clone_repo="owner/repo",
+            repo="owner/repo",
+            pr=136,
+        )
+
+        # _clone_shiori_repo_to_container should NOT be called
+        mock_clone_shiori.assert_not_called()
+        # _setup_pr_branch SHOULD be called
+        mock_setup.assert_called_once()
+
+    @patch("code_sandbox_mcp.server._docker")
+    @patch("code_sandbox_mcp.server._container_env")
+    @patch("code_sandbox_mcp.server._ensure_image")
+    @patch("code_sandbox_mcp.server.validate_image_ref")
+    @patch("code_sandbox_mcp.server._setup_pr_branch")
+    @patch("code_sandbox_mcp.server._clone_shiori_repo_to_container")
+    def test_clone_repo_called_when_pr_not_set(
+        self,
+        mock_clone_shiori: MagicMock,
+        mock_setup: MagicMock,
+        mock_validate: MagicMock,
+        mock_ensure_image: MagicMock,
+        mock_container_env: MagicMock,
+        mock_docker: MagicMock,
+    ):
+        mock_container = MagicMock()
+        mock_container.id = "abc123def456"
+        mock_client = MagicMock()
+        mock_client.containers.run.return_value = mock_container
+        mock_docker.return_value = mock_client
+        mock_container_env.return_value = {}
+
+        sandbox_initialize(
+            image="python@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            clone_repo="owner/repo",
+        )
+
+        # _clone_shiori_repo_to_container SHOULD be called
+        mock_clone_shiori.assert_called_once()
+        # _setup_pr_branch should NOT be called
+        mock_setup.assert_not_called()

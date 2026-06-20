@@ -351,6 +351,7 @@ def _setup_pr_branch(
     repo: str,
     pr_number: int,
     clone_dest: str,
+    pip_extras: str | None = "[dev]",
 ) -> str:
     """Clone repo and check out PR branch inside the container.
 
@@ -364,6 +365,8 @@ def _setup_pr_branch(
         repo: Repository in ``"owner/name"`` format.
         pr_number: Pull request number.
         clone_dest: Destination directory inside the container.
+        pip_extras: Pip extras string (e.g. ``"[dev]"``) for dev install.
+            Pass ``None`` to skip pip install entirely.
 
     Returns:
         Success message string.
@@ -407,9 +410,11 @@ def _setup_pr_branch(
             f"Incomplete PR info: owner={head_owner!r} name={head_name!r} ref={head_ref!r}"
         )
 
-    # Step 2: Clone the repo
+    # Step 2: Clone the base repo
+    # Clone the base repo (not head/fork) so that gh pr checkout
+    # works correctly with the PR number from the base repository.
     clone_cmd = (
-        f"gh repo clone {shlex.quote(head_owner + '/' + head_name)}"
+        f"gh repo clone {safe_repo}"
         f" {safe_dest}"
     )
     exit_code, output = container.exec_run(
@@ -427,7 +432,7 @@ def _setup_pr_branch(
             f"Failed to clone repo {repo}: {stderr_text or clone_output}"
         )
 
-    logger.info("Cloned %s → %s in container %s", repo, safe_dest, cid)
+    logger.info("Cloned %s → %s in container %s", safe_repo, safe_dest, cid)
 
     # Step 3: Checkout PR branch
     checkout_cmd = f"cd {safe_dest} && gh pr checkout {pr_number}"
@@ -452,22 +457,23 @@ def _setup_pr_branch(
     )
 
     # Step 4: Install dev dependencies (non-fatal)
-    install_cmd = f"cd {safe_dest} && pip install -e '.[dev]' -q"
-    exit_code, output = container.exec_run(
-        ["/bin/sh", "-c", install_cmd],
-        stdout=True,
-        stderr=True,
-        demux=True,
-    )
-    stdout_part, stderr_part = output or (b"", b"")
-    install_output = stdout_part.decode("utf-8", errors="replace") if stdout_part else ""
-    stderr_text = stderr_part.decode("utf-8", errors="replace") if stderr_part else ""
-
-    if exit_code != 0:
-        logger.warning(
-            "pip install dev deps failed (exit=%d): %s",
-            exit_code, (stderr_text or install_output).strip(),
+    if pip_extras is not None:
+        install_cmd = f"cd {safe_dest} && pip install -e '{pip_extras}' -q"
+        exit_code, output = container.exec_run(
+            ["/bin/sh", "-c", install_cmd],
+            stdout=True,
+            stderr=True,
+            demux=True,
         )
+        stdout_part, stderr_part = output or (b"", b"")
+        install_output = stdout_part.decode("utf-8", errors="replace") if stdout_part else ""
+        stderr_text = stderr_part.decode("utf-8", errors="replace") if stderr_part else ""
+
+        if exit_code != 0:
+            logger.warning(
+                "pip install deps failed (extras=%s, exit=%d): %s",
+                pip_extras, exit_code, (stderr_text or install_output).strip(),
+            )
 
     record_copy(
         cid,
@@ -496,6 +502,7 @@ def sandbox_initialize(
     clone_dest: str = "/tmp/repo",
     repo: str | None = None,
     pr: int | None = None,
+    pip_extras: str | None = "[dev]",
 ) -> str:
     """Start a new Docker sandbox container.
 
@@ -537,6 +544,9 @@ def sandbox_initialize(
                and ``inject_vcs_token=True``, clones the repository
                inside the container, checks out the PR head branch,
                and installs dev dependencies.
+        pip_extras: Pip extras string (e.g. ``"[dev]"``) for dev install.
+               Pass ``None`` to skip pip install entirely.
+               Only used when *pr* is specified.
 
     The image must be pulled locally before use: docker pull <image>
 
@@ -591,8 +601,10 @@ def sandbox_initialize(
     )
 
     # -- Shiori clone copy (Issue #84) --
+    # When pr is set, _setup_pr_branch handles its own clone,
+    # so skip the Shiori clone copy to avoid redundant clone.
     clone_msg = ""
-    if clone_repo:
+    if clone_repo and pr is None:
         try:
             clone_msg = " " + _clone_shiori_repo_to_container(
                 container, cid, clone_repo, clone_dest,
@@ -601,6 +613,11 @@ def sandbox_initialize(
             # Clone failure is non-fatal: the container is still usable.
             logger.warning("Shiori clone copy failed: %s", e)
             clone_msg = f" (clone_repo failed: {e})"
+    elif clone_repo and pr is not None:
+        logger.info(
+            "Skipping clone_repo=%s (pr=%s handles its own clone)",
+            clone_repo, pr,
+        )
 
     # -- PR branch setup (Issue #136) --
     pr_msg = ""
@@ -613,7 +630,7 @@ def sandbox_initialize(
         else:
             try:
                 pr_msg = " " + _setup_pr_branch(
-                    container, cid, repo, pr, clone_dest,
+                    container, cid, repo, pr, clone_dest, pip_extras,
                 )
             except Exception as e:
                 # PR setup failure is non-fatal: the container is still usable.
@@ -1588,6 +1605,7 @@ def run_container_and_exec(
     clone_dest: str = "/tmp/repo",
     repo: str | None = None,
     pr: int | None = None,
+    pip_extras: str | None = "[dev]",
 ) -> str:
     """Start a container, execute commands, then remove it (one-shot).
 
@@ -1633,6 +1651,9 @@ def run_container_and_exec(
                and ``inject_vcs_token=True``, clones the repository
                inside the container, checks out the PR head branch,
                and installs dev dependencies.
+        pip_extras: Pip extras string (e.g. ``"[dev]"``) for dev install.
+               Pass ``None`` to skip pip install entirely.
+               Only used when *pr* is specified.
 
     Returns:
         JSON string with ``status``, ``output`` (or ``error``),
@@ -1686,8 +1707,10 @@ def run_container_and_exec(
     )
 
     # --- Shiori clone copy (Issue #84) ---
+    # When pr is set, _setup_pr_branch handles its own clone,
+    # so skip the Shiori clone copy to avoid redundant clone.
     clone_error: str | None = None
-    if clone_repo:
+    if clone_repo and pr is None:
         try:
             _clone_shiori_repo_to_container(
                 container, container_id, clone_repo, clone_dest,
@@ -1695,6 +1718,11 @@ def run_container_and_exec(
         except Exception as e:
             logger.warning("Shiori clone copy failed: %s", e)
             clone_error = str(e)
+    elif clone_repo and pr is not None:
+        logger.info(
+            "Skipping clone_repo=%s (pr=%s handles its own clone)",
+            clone_repo, pr,
+        )
 
     # --- PR branch setup (Issue #136) ---
     pr_error: str | None = None
@@ -1707,7 +1735,7 @@ def run_container_and_exec(
         else:
             try:
                 _setup_pr_branch(
-                    container, container_id, repo, pr, clone_dest,
+                    container, container_id, repo, pr, clone_dest, pip_extras,
                 )
             except Exception as e:
                 logger.warning("PR branch setup failed: %s", e)
