@@ -18,6 +18,16 @@ This MCP routes all AI operations through **disposable Docker containers** with 
 
 The value of this MCP is as much about **what the AI cannot do** as what it can.
 
+For the full design rationale and decision-making principles, see [docs/design.md](docs/design.md).
+
+### Reducing host permissions
+
+A less obvious but equally important benefit: **this MCP lets you turn off broad host permissions in your AI client.**
+
+Without a sandbox MCP, AI agents operate directly on the host via shell tools (`Bash`, `PowerShell`, etc.). Every file edit, git command, or config change triggers a permission prompt — and permission fatigue sets in fast. Users end up allowing everything just to keep work flowing, which means the AI effectively has unrestricted access to the host.
+
+With this MCP, all real work happens inside the container. Host-level shell tools become unnecessary for the vast majority of tasks, so you can keep those permissions off by default. The result: the AI is structurally constrained, not just policy-constrained.
+
 ## Quick start
 
 ```bash
@@ -139,7 +149,16 @@ sandbox_update_start()    → returns job_id
 sandbox_update_check()    → poll until "done"
 ```
 
-The `--update-spec` flag controls the pip install source (default: `"."` for local checkout, or `"git+https://..."`).
+The `--update-spec` flag controls the pip install source (default: `"."`).
+
+> **Note:** The default `"."` only works when running from a local checkout that contains `pyproject.toml`.
+> If you installed via `pip install git+https://...`, you must explicitly set `--update-spec`:
+>
+> ```json
+> "args": ["-m", "code_sandbox_mcp.server", "--update-spec", "git+https://github.com/masuda-masuo/code-sandbox-mcp"]
+> ```
+>
+> Without this, `sandbox_update_start` will fail with `Neither 'setup.py' nor 'pyproject.toml' found`.
 
 ## Available tools
 
