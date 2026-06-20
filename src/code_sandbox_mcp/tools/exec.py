@@ -7,6 +7,8 @@ import json
 import os
 import shlex
 import time
+from typing import Any
+
 from docker.errors import NotFound
 
 from code_sandbox_mcp.journal import record_exec as journal_record_exec
