@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -101,8 +102,9 @@ _DEFAULT_IMAGE: str = "ghcr.io/masuda-masuo/code-sandbox-mcp/sandbox@sha256:1bc3
 
 #: Stdio proxy - shared with launcher via this module variable.
 _TERMINAL: str | None = None
-_UPDATE_SPEC: str = "."
+_UPDATE_SPEC: str = str(Path(__file__).resolve().parent.parent.parent)
 _UPDATE_LOG_DIR: Path | None = None
+_CURRENT_UPDATE_LOG_PATH: str | None = None
 #: Shiori repos root path on the host for cp-by-pass git clone (Issue #84).
 #: Set via ``--shiori-repos-path`` CLI arg or ``SHIORI_REPOS_PATH`` env var.
 #: When set, ``sandbox_initialize`` and ``run_container_and_exec`` can use
@@ -1202,6 +1204,8 @@ def _start_update_internal() -> str:
         log_dir = Path(tempfile.mkdtemp(dir=base))
 
     log_path = log_dir / "update.log"
+    global _CURRENT_UPDATE_LOG_PATH
+    _CURRENT_UPDATE_LOG_PATH = str(log_path)
 
     # Open a terminal window if configured
     if _TERMINAL:
@@ -1231,12 +1235,15 @@ def _run_update_background(log_path: str) -> None:
         )
         proc.wait()
 
-    if proc.returncode == 0:
-        # Signal the launcher to restart
-        logger.info("Update succeeded, restarting...")
-        os._exit(RESTART_EXIT_CODE)
-    else:
-        logger.error("Update failed with exit code %d", proc.returncode)
+        if proc.returncode == 0:
+            log_f.write("=== Update succeeded ===\n")
+            log_f.flush()
+            logger.info("Update succeeded, restarting...")
+            sys.exit(RESTART_EXIT_CODE)
+        else:
+            log_f.write(f"=== Update failed (exit code: {proc.returncode}) ===\n")
+            log_f.flush()
+            logger.error("Update failed with exit code %d", proc.returncode)
 
 
 def _open_update_terminal(terminal: str, log_path: str) -> None:
@@ -1254,12 +1261,15 @@ def _open_update_terminal(terminal: str, log_path: str) -> None:
             f"Get-Content -Wait '{log_path}'",
         ]
     elif sys.platform == "darwin":
-        cmd = ["open", "-a", "Terminal", log_path]
+        cmd = [
+            "osascript",
+            "-e",
+            f'tell application "Terminal" to do script "tail -f {log_path}"',
+        ]
     else:
-        # Linux: try xterm, otherwise just log
-        try:
+        if shutil.which("xterm"):
             cmd = ["xterm", "-e", f"tail -f {log_path}"]
-        except FileNotFoundError:
+        else:
             logger.warning("No terminal emulator found, log at %s", log_path)
             return
     try:
@@ -1288,8 +1298,45 @@ def sandbox_update_check() -> str:
     * ``"Status: error\nError: <message>"``
     * ``"Error: job {job_id} not found"``
     """
-    # This is a stub - actual implementation would check the log file
-    return "Status: running"
+    if not _CURRENT_UPDATE_LOG_PATH:
+        return "Error: no update job found"
+
+    log_path = Path(_CURRENT_UPDATE_LOG_PATH)
+    if not log_path.exists():
+        return "Error: update log not found"
+
+    try:
+        log_text = log_path.read_text()
+    except OSError as e:
+        return f"Error: cannot read update log: {e}"
+
+    if not log_text:
+        return "Status: running (elapsed: 0s)"
+
+    # Calculate elapsed time from file modification time
+    mtime = log_path.stat().st_mtime
+    start_line = None
+    for line in log_text.splitlines():
+        if "=== Update started" in line:
+            start_line = line
+            break
+
+    if start_line is None:
+        return "Error: no update start marker found in log"
+
+    # Try to parse elapsed from start marker
+    elapsed = time.time() - mtime
+    elapsed_str = f"{int(elapsed)}s"
+
+    if "=== Update succeeded ===" in log_text:
+        return f"Status: done (elapsed: {elapsed_str})"
+    elif "=== Update failed" in log_text:
+        for line in reversed(log_text.splitlines()):
+            if "=== Update failed" in line:
+                return f"Status: error (elapsed: {elapsed_str})\nError: {line.strip()}"
+        return f"Status: error (elapsed: {elapsed_str})"
+    else:
+        return f"Status: running (elapsed: {elapsed_str})"
 
 
 # ---------------------------------------------------------------------------
