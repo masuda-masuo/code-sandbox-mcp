@@ -9,6 +9,9 @@ name: Build sandbox variant images
 #
 # ビルド後、各バリアントイメージの HEALTHCHECK を実機（docker run）で確認する
 # （docs/design-multilang-support.md §5-6／設計方針「壊れたツールを隠さない」）。
+#
+# 注意: 各イメージの HEALTHCHECK --interval=30s のため、最初のチェック完了まで
+# 最大 35 秒かかる。poll は余裕を持って 90 秒（30 回 × 3s）待つ。
 
 on:
   push:
@@ -43,8 +46,8 @@ jobs:
         run: |
           cat <<'SCRIPT' > /tmp/healthcheck.sh
           wait_healthy() {
-            local cid=$1 label=$2
-            for i in $(seq 1 10); do
+            local cid=$1 label=$2 max=${3:-30}
+            for i in $(seq 1 $max); do
               s=$(docker inspect --format='{{.State.Health.Status}}' "$cid" 2>/dev/null || echo "starting")
               if [ "$s" = "healthy" ]; then
                 echo "[$label] HEALTHCHECK: $s"
@@ -68,12 +71,13 @@ jobs:
           tags: ghcr.io/${{ github.repository }}/sandbox:base
 
       # 2) base の HEALTHCHECK を確認
+      #    各イメージの HEALTHCHECK --interval=30s に対して max=30（90s）で待つ
       - name: Verify base HEALTHCHECK
         run: |
           source /tmp/healthcheck.sh
           IMG="ghcr.io/${{ github.repository }}/sandbox@${{ steps.base.outputs.digest }}"
-          CID=$(docker run -d "$IMG" sleep 30)
-          wait_healthy "$CID" "base" || { docker kill "$CID" >/dev/null 2>&1; exit 1; }
+          CID=$(docker run -d "$IMG" sleep 90)
+          wait_healthy "$CID" "base" 30 || { docker kill "$CID" >/dev/null 2>&1; exit 1; }
           docker kill "$CID" >/dev/null 2>&1
 
       # 3) 壊れたツールで HEALTHCHECK が unhealthy になることを確認（base）
@@ -124,8 +128,8 @@ jobs:
         run: |
           source /tmp/healthcheck.sh
           IMG="ghcr.io/${{ github.repository }}/sandbox@${{ steps.python.outputs.digest }}"
-          CID=$(docker run -d "$IMG" sleep 30)
-          wait_healthy "$CID" "python" || { docker kill "$CID" >/dev/null 2>&1; exit 1; }
+          CID=$(docker run -d "$IMG" sleep 90)
+          wait_healthy "$CID" "python" 30 || { docker kill "$CID" >/dev/null 2>&1; exit 1; }
           docker kill "$CID" >/dev/null 2>&1
 
       - name: Build and push go
@@ -144,8 +148,8 @@ jobs:
         run: |
           source /tmp/healthcheck.sh
           IMG="ghcr.io/${{ github.repository }}/sandbox@${{ steps.go.outputs.digest }}"
-          CID=$(docker run -d "$IMG" sleep 30)
-          wait_healthy "$CID" "go" || { docker kill "$CID" >/dev/null 2>&1; exit 1; }
+          CID=$(docker run -d "$IMG" sleep 90)
+          wait_healthy "$CID" "go" 30 || { docker kill "$CID" >/dev/null 2>&1; exit 1; }
           docker kill "$CID" >/dev/null 2>&1
 
       # 7) digest 固定参照と HEALTHCHECK 結果を Job Summary に出す
