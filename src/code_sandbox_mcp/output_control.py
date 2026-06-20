@@ -23,6 +23,7 @@ Usage::
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -375,3 +376,252 @@ def paginate_output(
         next_offset=next_offset if has_more else None,
         has_more=has_more,
     )
+
+
+
+# ---------------------------------------------------------------------------
+# Token estimation
+# ---------------------------------------------------------------------------
+
+
+#: Rough heuristic: 1 token ≈ 4 characters for English text.
+#: Used for max_output_tokens budget calculation.
+_CHARS_PER_TOKEN: float = 4.0
+
+
+def estimate_tokens(text: str) -> int:
+    """Estimate the number of tokens in *text*.
+
+    Uses a simple heuristic of *chars_per_token* characters per token.
+    For English text this is approximately correct; for code/mixed
+    content it is a reasonable approximation.
+
+    Args:
+        text: The text to estimate.
+
+    Returns:
+        Estimated token count (always >= 1 for non-empty text).
+    """
+    if not text:
+        return 0
+    return max(1, round(len(text) / _CHARS_PER_TOKEN))
+
+
+def truncate_by_tokens(
+    text: str,
+    max_tokens: int,
+) -> tuple[str, int]:
+    """Truncate *text* to fit within *max_tokens* estimated tokens.
+
+    The truncation keeps the beginning and end of the text, omitting
+    the middle portion with a note.  This is useful when a token
+    budget is specified via ``max_output_tokens``.
+
+    Args:
+        text: The text to truncate.
+        max_tokens: Maximum estimated token count allowed.
+
+    Returns:
+        Tuple of ``(truncated_text, original_estimated_tokens)``.
+    """
+    if not text:
+        return "", 0
+
+    original_tokens = estimate_tokens(text)
+    if original_tokens <= max_tokens:
+        return text, original_tokens
+
+    lines = text.split("\n")
+    total_lines = len(lines)
+
+    # Reserve tokens for the truncation notice
+    notice = f"\n... (truncated to {max_tokens} estimated tokens, originally {original_tokens}) ...\n"
+    notice_tokens = estimate_tokens(notice)
+
+    budget = max_tokens - notice_tokens
+    if budget <= 0:
+        return notice, original_tokens
+
+    # Line-based truncation: keep head and tail proportionally
+    max_lines = max(1, total_lines * budget // original_tokens)
+    head_count = max_lines // 2
+    tail_count = max_lines - head_count
+
+    head = lines[:head_count]
+    tail = lines[-tail_count:] if tail_count > 0 else []
+    result = "\n".join(head) + notice + "\n".join(tail)
+    return result, original_tokens
+
+
+# ---------------------------------------------------------------------------
+# Failure fingerprinting
+# ---------------------------------------------------------------------------
+
+
+#: Patterns to normalize error messages before fingerprinting.
+#: Strips line numbers, file paths, and volatile offsets so that
+#: semantically identical failures produce the same fingerprint.
+#: This is intentionally aggressive — even the filename is removed
+#: so that the same error type in different files compresses together
+#: (e.g. ``NameError`` in ``foo.py`` and ``bar.py`` share one fingerprint).
+_NORMALIZE_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r'File "[^"]+", line \d+'), 'File "", line N'),
+    (re.compile(r'line \d+'), 'line N'),
+    (re.compile(r':\d+:\d+'), ':N:N'),
+]
+
+
+#: Common failure patterns to detect for fingerprinting.
+_FAILURE_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"ERROR\s+\w+"),
+    re.compile(r"FAILED\s+test_\w+"),
+    re.compile(r"AssertionError"),
+    re.compile(r"Traceback \(most recent call last\)"),
+    re.compile(r"RuntimeError"),
+    re.compile(r"ModuleNotFoundError"),
+    re.compile(r"ImportError"),
+    re.compile(r"SyntaxError"),
+]
+
+
+def compute_failure_fingerprint(text: str) -> str:
+    """Compute a compact fingerprint of failure patterns in *text*.
+
+    Extracts the first occurrence of each failure pattern and hashes
+    them together to produce a signature.  Two failures with the same
+    fingerprint are considered "isomorphic" (same failure type and
+    similar location).
+
+    Normalizes file paths and line numbers before fingerprinting so
+    that ``File \"foo.py\", line 42`` and ``File \"bar.py\", line 7``
+    that differ only in location produce the same fingerprint.
+
+    Args:
+        text: Output text that may contain failure patterns.
+
+    Returns:
+        Hex digest fingerprint string, or empty string if no failure
+        patterns are found.
+    """
+    # Normalize volatile parts (line numbers, file paths)
+    normalized = text
+    for pat, repl in _NORMALIZE_PATTERNS:
+        normalized = pat.sub(repl, normalized)
+
+    matches: list[str] = []
+    for pattern in _FAILURE_PATTERNS:
+        m = pattern.search(normalized)
+        if m:
+            matches.append(m.group())
+    if not matches:
+        return ""
+    identifier = "\n".join(matches)
+    return hashlib.sha256(identifier.encode("utf-8")).hexdigest()[:16]
+
+
+def compress_failures(text: str) -> str:
+    """Compress known failure patterns into ``[×N]`` summary lines.
+
+    Detects repeated isomorphic failures (same fingerprint) and
+    replaces them with a compact summary::
+
+        FAILED test_login
+        [×5] FAILED test_login  (isomorphic failures compressed)
+
+    Handles both single-line failures and multi-line failure blocks
+    (e.g. tracebacks) by computing fingerprints on failure blocks.
+
+    Args:
+        text: Output text with potential repeated failures.
+
+    Returns:
+        Text with repeated failure patterns compressed.
+    """
+    lines = text.split("\n")
+    if len(lines) < 3:
+        return text
+
+    # ---- Phase 1: Build failure blocks ----
+    # A failure block is one or more consecutive lines that belong
+    # to the same failure instance.  Rules:
+    # - Lines with the SAME fingerprint as the block start are new
+    #   blocks (repeated single-line failures).
+    # - Lines with a DIFFERENT fingerprint extend the current block
+    #   (multi-line failures like tracebacks).
+    # - Lines without a fingerprint end the current block.
+    blocks: list[tuple[int, int, str, str]] = []  # (start, end_excl, fp, text)
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        fp = compute_failure_fingerprint(line)
+        if not fp:
+            i += 1
+            continue
+
+        block_start = i
+        block_start_fp = fp
+        j = i + 1
+        while j < len(lines):
+            next_fp = compute_failure_fingerprint(lines[j])
+            if not next_fp:
+                # Non-failure line ends the block
+                break
+            if next_fp == block_start_fp:
+                # Same fingerprint as block start: new block starting
+                break
+            # Different fingerprint: extends multi-line block (traceback)
+            j += 1
+        block_text = "\n".join(lines[block_start:j])
+        # Compute fingerprint of the full block text for multi-line matching
+        block_fp = compute_failure_fingerprint(block_text) or block_start_fp
+        blocks.append((block_start, j, block_fp, block_text))
+        i = j
+
+    if not blocks:
+        return "\n".join(lines)
+
+    # ---- Phase 2: Compress repeated blocks ----
+    # Walk through blocks and compress consecutive blocks with the same
+    # fingerprint.
+    result: list[tuple[int, int, str]] = []  # (start, end_excl, compressed_text)
+    bi = 0
+    while bi < len(blocks):
+        blk_start, blk_end, blk_fp, blk_text = blocks[bi]
+
+        # Count consecutive blocks with the same fingerprint
+        count = 1
+        bj = bi + 1
+        while bj < len(blocks):
+            nxt_start, nxt_end, nxt_fp, nxt_text = blocks[bj]
+            if nxt_fp == blk_fp and nxt_text == blk_text:
+                count += 1
+                bj += 1
+            else:
+                break
+
+        if count >= 3:
+            # Compress: keep only the first line of the block with a summary
+            first_line = blk_text.split("\n")[0]
+            compressed = f"[×{count}] {first_line}  (isomorphic failures compressed)"
+            last_end = blocks[bj - 1][1]
+            result.append((blk_start, last_end, compressed))
+        else:
+            for k in range(bi, bj):
+                result.append((blocks[k][0], blocks[k][1], blocks[k][3]))
+        bi = bj
+
+    # ---- Phase 3: Rebuild output ----
+    # Merge compressed blocks with non-failure lines
+    i = 0
+    out: list[str] = []
+    block_idx = 0
+    while i < len(lines):
+        if block_idx < len(result) and i == result[block_idx][0]:
+            out.append(result[block_idx][2])
+            i = result[block_idx][1]
+            block_idx += 1
+        else:
+            out.append(lines[i])
+            i += 1
+
+    return "\n".join(out)

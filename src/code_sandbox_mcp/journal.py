@@ -117,11 +117,14 @@ def record_exec(
     verbose: str = "summary",
     allow_network: bool = False,
     inject_vcs_token: bool = False,
+    cached: bool = False,
+    output_size: int = 0,
+    max_output_tokens: int | None = None,
+    input_hash: str = "",
 ) -> None:
-    """Record a command execution event."""
     run_id = get_or_create_run_id(container_id)
     boundary = allow_network or inject_vcs_token
-    _append_json({
+    entry: dict[str, Any] = {
         "ts": _utcnow_iso(),
         "run_id": run_id,
         "container_id": container_id,
@@ -130,7 +133,14 @@ def record_exec(
         "exit_code": exit_code,
         "verbose": verbose,
         "boundary_crossing": boundary,
-    })
+        "cached": cached,
+        "output_size": output_size,
+    }
+    if max_output_tokens is not None:
+        entry["max_output_tokens"] = max_output_tokens
+    if input_hash:
+        entry["input_hash"] = input_hash
+    _append_json(entry)
 
 
 def record_stop(container_id: str) -> None:
