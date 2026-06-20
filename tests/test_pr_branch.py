@@ -1,0 +1,314 @@
+"""Tests for _setup_pr_branch and sandbox_initialize/run_container_and_exec with pr parameter (Issue #136)."""
+from __future__ import annotations
+
+import json
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from code_sandbox_mcp.server import (
+    _setup_pr_branch,
+    run_container_and_exec,
+    sandbox_initialize,
+)
+
+
+def _make_container_mock(exec_returns: list[tuple[int, tuple[bytes, bytes]]]):
+    container = MagicMock()
+    container.exec_run.side_effect = [
+        (ec, (stdout, stderr)) for ec, (stdout, stderr) in exec_returns
+    ]
+    return container
+
+
+_PR_INFO_JSON = json.dumps({
+    "headRefName": "feature-branch",
+    "headRepository": {"name": "repo"},
+    "headRepositoryOwner": {"login": "owner"},
+})
+
+
+class TestSetupPrBranch:
+    """Tests for _setup_pr_branch."""
+
+    def test_success(self):
+        container = _make_container_mock([
+            (0, (_PR_INFO_JSON.encode(), b"")),
+            (0, (b"Cloned repo\n", b"")),
+            (0, (b"Switched to branch\n", b"")),
+            (0, (b"Installed\n", b"")),
+        ])
+
+        with patch("code_sandbox_mcp.server.logger"):
+            result = _setup_pr_branch(
+                container, "abc123def456", "owner/repo", 136, "/tmp/repo",
+            )
+
+        assert "PR #136" in result
+        assert "feature-branch" in result
+        assert "/tmp/repo" in result
+        assert "abc123" in result
+
+    def test_gh_view_failure(self):
+        container = _make_container_mock([
+            (1, (b"", b"not found")),
+        ])
+
+        with pytest.raises(RuntimeError, match="Failed to fetch PR"):
+            _setup_pr_branch(
+                container, "abc123def456", "owner/repo", 999, "/tmp/repo",
+            )
+
+    def test_clone_failure(self):
+        container = _make_container_mock([
+            (0, (_PR_INFO_JSON.encode(), b"")),
+            (1, (b"", b"Repository not found")),
+        ])
+
+        with pytest.raises(RuntimeError, match="Failed to clone"):
+            _setup_pr_branch(
+                container, "abc123def456", "owner/repo", 136, "/tmp/repo",
+            )
+
+    def test_checkout_failure(self):
+        container = _make_container_mock([
+            (0, (_PR_INFO_JSON.encode(), b"")),
+            (0, (b"Cloned\n", b"")),
+            (1, (b"", b"checkout failed")),
+        ])
+
+        with pytest.raises(RuntimeError, match="Failed to checkout"):
+            _setup_pr_branch(
+                container, "abc123def456", "owner/repo", 136, "/tmp/repo",
+            )
+
+    def test_install_failure_non_fatal(self):
+        container = _make_container_mock([
+            (0, (_PR_INFO_JSON.encode(), b"")),
+            (0, (b"Cloned\n", b"")),
+            (0, (b"Switched\n", b"")),
+            (1, (b"", b"install failed")),
+        ])
+
+        with patch("code_sandbox_mcp.server.logger") as mock_logger:
+            result = _setup_pr_branch(
+                container, "abc123def456", "owner/repo", 136, "/tmp/repo",
+            )
+
+        assert "PR #136" in result
+        mock_logger.warning.assert_called_once()
+        assert "pip install dev deps failed" in mock_logger.warning.call_args[0][0]
+
+    def test_invalid_json_from_gh(self):
+        container = _make_container_mock([
+            (0, (b"not valid json", b"")),
+        ])
+
+        with pytest.raises(RuntimeError, match="Failed to parse PR info JSON"):
+            _setup_pr_branch(
+                container, "abc123def456", "owner/repo", 136, "/tmp/repo",
+            )
+
+    def test_incomplete_pr_info(self):
+        incomplete = json.dumps({"headRefName": "branch"})
+        container = _make_container_mock([
+            (0, (incomplete.encode(), b"")),
+        ])
+
+        with pytest.raises(RuntimeError, match="Incomplete PR info"):
+            _setup_pr_branch(
+                container, "abc123def456", "owner/repo", 136, "/tmp/repo",
+            )
+
+
+class TestSandboxInitializePrParam:
+    """Tests for sandbox_initialize with pr parameter."""
+
+    @patch("code_sandbox_mcp.server._docker")
+    @patch("code_sandbox_mcp.server._ensure_image")
+    @patch("code_sandbox_mcp.server.validate_image_ref")
+    @patch("code_sandbox_mcp.server._setup_pr_branch")
+    def test_pr_calls_setup(
+        self,
+        mock_setup: MagicMock,
+        mock_validate: MagicMock,
+        mock_ensure_image: MagicMock,
+        mock_docker: MagicMock,
+    ):
+        mock_container = MagicMock()
+        mock_container.id = "abc123def456"
+        mock_client = MagicMock()
+        mock_client.containers.run.return_value = mock_container
+        mock_docker.return_value = mock_client
+        mock_setup.return_value = "PR #136 (feature) \u2192 /tmp/repo/repo in container abc123"
+
+        result = sandbox_initialize(
+            image="python@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            repo="owner/repo",
+            pr=136,
+            allow_network=False,
+            inject_vcs_token=False,
+        )
+
+        assert "abc123def456" in result
+        assert "PR #136" in result
+        mock_setup.assert_called_once()
+        args = mock_setup.call_args[0]
+        assert args[2] == "owner/repo"
+        assert args[3] == 136
+        run_kwargs = mock_client.containers.run.call_args[1]
+        assert "GITHUB_TOKEN" in (run_kwargs.get("environment") or {})
+
+    @patch("code_sandbox_mcp.server._docker")
+    @patch("code_sandbox_mcp.server._ensure_image")
+    @patch("code_sandbox_mcp.server.validate_image_ref")
+    def test_pr_without_repo_returns_warning(
+        self,
+        mock_validate: MagicMock,
+        mock_ensure_image: MagicMock,
+        mock_docker: MagicMock,
+    ):
+        mock_container = MagicMock()
+        mock_container.id = "abc123def456"
+        mock_client = MagicMock()
+        mock_client.containers.run.return_value = mock_container
+        mock_docker.return_value = mock_client
+
+        result = sandbox_initialize(
+            image="python@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            pr=136,
+        )
+
+        assert "abc123def456" in result
+        assert "pr setup failed" in result
+        assert "repo is required" in result
+
+    @patch("code_sandbox_mcp.server._docker")
+    @patch("code_sandbox_mcp.server._ensure_image")
+    @patch("code_sandbox_mcp.server.validate_image_ref")
+    @patch("code_sandbox_mcp.server._setup_pr_branch")
+    def test_pr_setup_failure_non_fatal(
+        self,
+        mock_setup: MagicMock,
+        mock_validate: MagicMock,
+        mock_ensure_image: MagicMock,
+        mock_docker: MagicMock,
+    ):
+        mock_container = MagicMock()
+        mock_container.id = "abc123def456"
+        mock_client = MagicMock()
+        mock_client.containers.run.return_value = mock_container
+        mock_docker.return_value = mock_client
+        mock_setup.side_effect = RuntimeError("network error")
+
+        result = sandbox_initialize(
+            image="python@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            repo="owner/repo",
+            pr=136,
+        )
+
+        assert result.startswith("abc123def456")
+        assert "pr setup failed" in result
+
+    @patch("code_sandbox_mcp.server._docker")
+    @patch("code_sandbox_mcp.server._ensure_image")
+    @patch("code_sandbox_mcp.server.validate_image_ref")
+    def test_without_pr_works_normally(
+        self,
+        mock_validate: MagicMock,
+        mock_ensure_image: MagicMock,
+        mock_docker: MagicMock,
+    ):
+        mock_container = MagicMock()
+        mock_container.id = "abc123def456"
+        mock_client = MagicMock()
+        mock_client.containers.run.return_value = mock_container
+        mock_docker.return_value = mock_client
+
+        result = sandbox_initialize(
+            image="python@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        )
+
+        assert result == "abc123def456"
+
+
+class TestRunContainerAndExecPrParam:
+    """Tests for run_container_and_exec with pr parameter."""
+
+    @patch("code_sandbox_mcp.server._docker")
+    @patch("code_sandbox_mcp.server.validate_image_ref")
+    @patch("code_sandbox_mcp.server._setup_pr_branch")
+    def test_pr_calls_setup(
+        self,
+        mock_setup: MagicMock,
+        mock_validate: MagicMock,
+        mock_docker: MagicMock,
+    ):
+        mock_container = MagicMock()
+        mock_container.id = "abc123def456"
+        mock_container.exec_run.return_value = (0, (b"test output", b""))
+        mock_client = MagicMock()
+        mock_client.containers.run.return_value = mock_container
+        mock_docker.return_value = mock_client
+
+        result = json.loads(run_container_and_exec(
+            image="python@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            commands=["echo hello"],
+            repo="owner/repo",
+            pr=136,
+        ))
+
+        assert result["status"] == "ok"
+        mock_setup.assert_called_once_with(
+            mock_container, "abc123def456", "owner/repo", 136, "/tmp/repo",
+        )
+
+    @patch("code_sandbox_mcp.server._docker")
+    @patch("code_sandbox_mcp.server.validate_image_ref")
+    def test_pr_without_repo_returns_warning(
+        self,
+        mock_validate: MagicMock,
+        mock_docker: MagicMock,
+    ):
+        mock_container = MagicMock()
+        mock_container.id = "abc123def456"
+        mock_container.exec_run.return_value = (0, (b"test output", b""))
+        mock_client = MagicMock()
+        mock_client.containers.run.return_value = mock_container
+        mock_docker.return_value = mock_client
+
+        result = json.loads(run_container_and_exec(
+            image="python@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            commands=["echo hello"],
+            pr=136,
+        ))
+
+        assert result["status"] == "ok"
+        assert result["pr_warning"] == "repo is required when pr is specified"
+
+    @patch("code_sandbox_mcp.server._docker")
+    @patch("code_sandbox_mcp.server.validate_image_ref")
+    @patch("code_sandbox_mcp.server._setup_pr_branch")
+    def test_pr_error_reported(
+        self,
+        mock_setup: MagicMock,
+        mock_validate: MagicMock,
+        mock_docker: MagicMock,
+    ):
+        mock_container = MagicMock()
+        mock_container.id = "abc123def456"
+        mock_container.exec_run.return_value = (0, (b"test output", b""))
+        mock_client = MagicMock()
+        mock_client.containers.run.return_value = mock_container
+        mock_docker.return_value = mock_client
+        mock_setup.side_effect = RuntimeError("network error")
+
+        result = json.loads(run_container_and_exec(
+            image="python@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            commands=["echo hello"],
+            repo="owner/repo",
+            pr=136,
+        ))
+
+        assert result["status"] == "ok"
+        assert result["pr_warning"] == "network error"

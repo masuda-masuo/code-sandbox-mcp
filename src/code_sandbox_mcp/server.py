@@ -341,6 +341,148 @@ def _clone_shiori_repo_to_container(
 
 
 # ---------------------------------------------------------------------------
+# PR branch setup helper (Issue #136)
+# ---------------------------------------------------------------------------
+
+
+def _setup_pr_branch(
+    container: Any,
+    container_id: str,
+    repo: str,
+    pr_number: int,
+    clone_dest: str,
+) -> str:
+    """Clone repo and check out PR branch inside the container.
+
+    Uses ``gh`` (authenticated via injected VCS token) to fetch PR info,
+    clone the repository, check out the PR's head branch, and install
+    dev dependencies.
+
+    Args:
+        container: Docker container object.
+        container_id: 12-char container ID prefix.
+        repo: Repository in ``"owner/name"`` format.
+        pr_number: Pull request number.
+        clone_dest: Destination directory inside the container.
+
+    Returns:
+        Success message string.
+    """
+    cid = container_id[:12]
+    safe_dest = shlex.quote(f"{clone_dest}/repo")
+    safe_repo = shlex.quote(repo)
+
+    # Step 1: Get PR head branch info
+    gh_info_cmd = (
+        f"gh pr view {pr_number} --repo {safe_repo}"
+        f" --json headRefName,headRepository,headRepositoryOwner"
+    )
+    exit_code, output = container.exec_run(
+        ["/bin/sh", "-c", gh_info_cmd],
+        stdout=True,
+        stderr=True,
+        demux=True,
+    )
+    stdout_part, stderr_part = output or (b"", b"")
+    stdout_text = stdout_part.decode("utf-8", errors="replace") if stdout_part else ""
+    stderr_text = stderr_part.decode("utf-8", errors="replace") if stderr_part else ""
+
+    if exit_code != 0:
+        raise RuntimeError(
+            f"Failed to fetch PR #{pr_number} from {repo}: {stderr_text or stdout_text}"
+        )
+
+    try:
+        pr_info = json.loads(stdout_text)
+    except json.JSONDecodeError:
+        raise RuntimeError(
+            f"Failed to parse PR info JSON: {stdout_text[:200]}"
+        )
+
+    head_owner = pr_info.get("headRepositoryOwner", {}).get("login", "")
+    head_name = pr_info.get("headRepository", {}).get("name", "")
+    head_ref = pr_info.get("headRefName", "")
+    if not all([head_owner, head_name, head_ref]):
+        raise RuntimeError(
+            f"Incomplete PR info: owner={head_owner!r} name={head_name!r} ref={head_ref!r}"
+        )
+
+    # Step 2: Clone the repo
+    clone_cmd = (
+        f"gh repo clone {shlex.quote(head_owner + '/' + head_name)}"
+        f" {safe_dest}"
+    )
+    exit_code, output = container.exec_run(
+        ["/bin/sh", "-c", clone_cmd],
+        stdout=True,
+        stderr=True,
+        demux=True,
+    )
+    stdout_part, stderr_part = output or (b"", b"")
+    clone_output = stdout_part.decode("utf-8", errors="replace") if stdout_part else ""
+    stderr_text = stderr_part.decode("utf-8", errors="replace") if stderr_part else ""
+
+    if exit_code != 0:
+        raise RuntimeError(
+            f"Failed to clone repo {repo}: {stderr_text or clone_output}"
+        )
+
+    logger.info("Cloned %s → %s in container %s", repo, safe_dest, cid)
+
+    # Step 3: Checkout PR branch
+    checkout_cmd = f"cd {safe_dest} && gh pr checkout {pr_number}"
+    exit_code, output = container.exec_run(
+        ["/bin/sh", "-c", checkout_cmd],
+        stdout=True,
+        stderr=True,
+        demux=True,
+    )
+    stdout_part, stderr_part = output or (b"", b"")
+    co_output = stdout_part.decode("utf-8", errors="replace") if stdout_part else ""
+    stderr_text = stderr_part.decode("utf-8", errors="replace") if stderr_part else ""
+
+    if exit_code != 0:
+        raise RuntimeError(
+            f"Failed to checkout PR #{pr_number}: {stderr_text or co_output}"
+        )
+
+    logger.info(
+        "Checked out PR #%s (%s) → %s in container %s",
+        pr_number, head_ref, safe_dest, cid,
+    )
+
+    # Step 4: Install dev dependencies (non-fatal)
+    install_cmd = f"cd {safe_dest} && pip install -e '.[dev]' -q"
+    exit_code, output = container.exec_run(
+        ["/bin/sh", "-c", install_cmd],
+        stdout=True,
+        stderr=True,
+        demux=True,
+    )
+    stdout_part, stderr_part = output or (b"", b"")
+    install_output = stdout_part.decode("utf-8", errors="replace") if stdout_part else ""
+    stderr_text = stderr_part.decode("utf-8", errors="replace") if stderr_part else ""
+
+    if exit_code != 0:
+        logger.warning(
+            "pip install dev deps failed (exit=%d): %s",
+            exit_code, (stderr_text or install_output).strip(),
+        )
+
+    record_copy(
+        cid,
+        "setup_pr_branch",
+        f"repo={repo} pr=#{pr_number} branch={head_ref}",
+        safe_dest,
+    )
+
+    return (
+        f"PR #{pr_number} ({head_ref}) → {clone_dest}/repo "
+        f"in container {cid}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # sandbox_initialize
 # ---------------------------------------------------------------------------
 
@@ -352,6 +494,8 @@ def sandbox_initialize(
     inject_vcs_token: bool = False,
     clone_repo: str | None = None,
     clone_dest: str = "/tmp/repo",
+    repo: str | None = None,
+    pr: int | None = None,
 ) -> str:
     """Start a new Docker sandbox container.
 
@@ -386,6 +530,13 @@ def sandbox_initialize(
         clone_dest: Destination directory in the container for the
                cloned repository (default: ``/tmp/repo``).
                The actual path will be ``{clone_dest}/repo``.
+        repo: Repository in ``"owner/name"`` format.
+               Required when *pr* is specified.
+        pr: Pull request number to clone and check out.
+               When set, implicitly enables ``allow_network=True``
+               and ``inject_vcs_token=True``, clones the repository
+               inside the container, checks out the PR head branch,
+               and installs dev dependencies.
 
     The image must be pulled locally before use: docker pull <image>
 
@@ -393,11 +544,18 @@ def sandbox_initialize(
         Container ID string (12-character prefix).
         If *clone_repo* is specified, a message about the clone copy
         is appended.
+        If *pr* is specified, a message about the PR branch setup
+        is appended.
 
     See also:
         :func:`run_container_and_exec` — one-shot init + exec + stop.
         :func:`clone_repo` — clone after container is running.
     """
+    # When pr is specified, implicitly enable network and VCS token
+    if pr is not None:
+        allow_network = True
+        inject_vcs_token = True
+
     client = _docker()
     resolved = image or _DEFAULT_IMAGE
     env = _container_env(inject_vcs_token=inject_vcs_token)
@@ -444,7 +602,25 @@ def sandbox_initialize(
             logger.warning("Shiori clone copy failed: %s", e)
             clone_msg = f" (clone_repo failed: {e})"
 
-    return cid + clone_msg
+    # -- PR branch setup (Issue #136) --
+    pr_msg = ""
+    if pr is not None:
+        if not repo:
+            logger.warning(
+                "pr parameter requires repo, got repo=None"
+            )
+            pr_msg = " (pr setup failed: repo is required when pr is specified)"
+        else:
+            try:
+                pr_msg = " " + _setup_pr_branch(
+                    container, cid, repo, pr, clone_dest,
+                )
+            except Exception as e:
+                # PR setup failure is non-fatal: the container is still usable.
+                logger.warning("PR branch setup failed: %s", e)
+                pr_msg = f" (pr setup failed: {e})"
+
+    return cid + clone_msg + pr_msg
 
 
 # ---------------------------------------------------------------------------
@@ -1410,6 +1586,8 @@ def run_container_and_exec(
     inject_vcs_token: bool = False,
     clone_repo: str | None = None,
     clone_dest: str = "/tmp/repo",
+    repo: str | None = None,
+    pr: int | None = None,
 ) -> str:
     """Start a container, execute commands, then remove it (one-shot).
 
@@ -1448,6 +1626,13 @@ def run_container_and_exec(
         clone_dest: Destination directory in the container for the
                cloned repository (default: ``/tmp/repo``).
                The actual path will be ``{clone_dest}/repo``.
+        repo: Repository in ``"owner/name"`` format.
+               Required when *pr* is specified.
+        pr: Pull request number to clone and check out.
+               When set, implicitly enables ``allow_network=True``
+               and ``inject_vcs_token=True``, clones the repository
+               inside the container, checks out the PR head branch,
+               and installs dev dependencies.
 
     Returns:
         JSON string with ``status``, ``output`` (or ``error``),
@@ -1463,6 +1648,11 @@ def run_container_and_exec(
     # Validate commands: must not be None or empty
     if not commands:
         return json.dumps({"status": "error", "error": "No commands provided"})
+
+    # When pr is specified, implicitly enable network and VCS token
+    if pr is not None:
+        allow_network = True
+        inject_vcs_token = True
 
     resolved = image or _DEFAULT_IMAGE
     client = _docker()
@@ -1505,6 +1695,23 @@ def run_container_and_exec(
         except Exception as e:
             logger.warning("Shiori clone copy failed: %s", e)
             clone_error = str(e)
+
+    # --- PR branch setup (Issue #136) ---
+    pr_error: str | None = None
+    if pr is not None:
+        if not repo:
+            logger.warning(
+                "pr parameter requires repo, got repo=None"
+            )
+            pr_error = "repo is required when pr is specified"
+        else:
+            try:
+                _setup_pr_branch(
+                    container, container_id, repo, pr, clone_dest,
+                )
+            except Exception as e:
+                logger.warning("PR branch setup failed: %s", e)
+                pr_error = str(e)
 
     # --- Execute commands ---
     try:
@@ -1591,6 +1798,8 @@ def run_container_and_exec(
         result["stderr"] = stderr_text
     if clone_error:
         result["clone_warning"] = clone_error
+    if pr_error:
+        result["pr_warning"] = pr_error
 
     journal_record_exec(
         container_id,
