@@ -344,6 +344,18 @@ class TestSandboxExec:
         ))
         assert result["status"] == "error"
 
+    @patch("code_sandbox_mcp.server._docker")
+    def test_negative_timeout_returns_error(self, mock_docker: MagicMock) -> None:
+        """timeout < 0 is rejected immediately with a clear error."""
+        result = self._decode(sandbox_exec(
+            container_id="abc123def456",
+            commands=["echo ok"],
+            timeout=-1,
+        ))
+        assert result["status"] == "error"
+        assert "timeout" in result["error"]
+        mock_docker.assert_not_called()
+
 
 
 

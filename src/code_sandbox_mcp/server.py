@@ -470,14 +470,14 @@ def sandbox_exec(
 
     .. note:: **Multibyte characters and newlines in commands**
 
-       Pass each command as a plain string — the MCP layer serialises
-       arguments to JSON, so **raw newlines inside a string value will
-       break JSON parsing** (``Unterminated string`` error) before the
-       request even reaches the server.  To run a multi-line shell
-       command use ``\\n`` escape sequences, or write the script to a
-       file first and execute it.  Multibyte characters (e.g. Japanese)
-       are safe as long as no literal newline appears inside the JSON
-       string value.
+       Pass each command as a plain string — JSON-RPC (and therefore the
+       MCP transport layer) does not allow **raw newlines inside a JSON
+       string value**, so including one causes an ``Unterminated string``
+       parse error before the request even reaches the server.  To run a
+       multi-line shell command use ``\\n`` escape sequences, or write the
+       script to a file first and execute it.  Multibyte characters
+       (e.g. Japanese) are safe as long as no literal newline appears
+       inside the JSON string value.
 
     Args:
         container_id: 12-character container ID prefix.
@@ -504,6 +504,9 @@ def sandbox_exec(
         ``stderr``.  ``status`` is ``"timeout"`` when *timeout* was
         exceeded.
     """
+    if timeout < 0:
+        return json.dumps({"status": "error", "error": "timeout must be >= 0"})
+
     client = _docker()
     try:
         container = client.containers.get(container_id)
@@ -517,7 +520,7 @@ def sandbox_exec(
     joined = " && ".join(commands)
     encoded = base64.b64encode(joined.encode("utf-8")).decode("ascii")
     tmpf = f"/tmp/.sx_{os.urandom(4).hex()}.sh"
-    runner = f"timeout {int(timeout)} {tmpf}" if timeout > 0 else tmpf
+    runner = f"timeout {timeout} {tmpf}" if timeout > 0 else tmpf
     cmd = (
         f"echo {shlex.quote(encoded)} | base64 -d > {tmpf}"
         f" && chmod +x {tmpf}"
