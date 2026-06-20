@@ -861,8 +861,9 @@ class TestSandboxCreatePr:
         )
         assert "error" in result
 
+    @patch("code_sandbox_mcp.server.record_boundary_crossing")
     @patch("code_sandbox_mcp.server._docker")
-    def test_api_push_failure_returns_error(self, mock_docker: MagicMock) -> None:
+    def test_api_push_failure_returns_error(self, mock_docker: MagicMock, mock_record: MagicMock) -> None:
         """If the python script returns non-zero, status=error is returned."""
         # exec_run sequence:
         # 1. write script (success)
@@ -884,6 +885,7 @@ class TestSandboxCreatePr:
         )
         assert result["status"] == "error"
         assert result["step"] == "api_push"
+        mock_record.assert_called_once()
 
     @patch("code_sandbox_mcp.server.record_boundary_crossing")
     @patch("code_sandbox_mcp.server._docker")

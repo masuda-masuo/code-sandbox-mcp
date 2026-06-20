@@ -3141,7 +3141,7 @@ def sandbox_create_pr(
     if "error" in push_result:
         record_boundary_crossing(
             cid, "sandbox_create_pr",
-            f"repo={repo} branch={branch} step=api_push error={push_result.get('error', '')!s:.200}",
+            f"repo={repo} branch={branch} step=api_push error={push_result.get('error', ''):.200}",
             approved=False, token="",
         )
         return json.dumps({"status": "error", "step": "api_push", **push_result})
@@ -3159,11 +3159,11 @@ def sandbox_create_pr(
     if pr_body:
         body_b64 = base64.b64encode(pr_body.encode("utf-8")).decode("ascii")
         # Wrap pr_cmd: write body to a temp file, run pr_cmd with --body-file, then clean up
-        _base_pr_cmd = pr_cmd
+        base_cmd = pr_cmd
         pr_cmd = (
             f"BODY_FILE=$(mktemp) &&"
             f" echo {shlex.quote(body_b64)} | base64 -d > \"$BODY_FILE\" &&"
-            f" {_base_pr_cmd} --body-file \"$BODY_FILE\" &&"
+            f" {base_cmd} --body-file \"$BODY_FILE\" &&"
             f" rm -f \"$BODY_FILE\""
         )
 
