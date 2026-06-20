@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from code_sandbox_mcp.server import (
+    _clone_repo_via_network,
     _clone_shiori_repo_to_container,
     _validate_clone_repo,
     run_container_and_exec,
@@ -588,3 +589,38 @@ class TestShioriReposPathArg:
             parser = _build_arg_parser()
             args = parser.parse_args([])
             assert args.shiori_repos_path == "/custom/repos"
+
+
+class TestCloneRepoViaNetwork:
+    """Tests for _clone_repo_via_network (Issue #146, PR #170 review)."""
+
+    def _container(self, exit_code: int, output: bytes) -> MagicMock:
+        c = MagicMock()
+        c.id = "abc123def456"
+        c.exec_run.return_value = (exit_code, output)
+        return c
+
+    def test_success_returns_message(self) -> None:
+        c = self._container(0, b"")
+        msg = _clone_repo_via_network(c, "abc123def456", "owner/repo", "/tmp/repo")
+        assert "owner/repo" in msg
+        assert "/tmp/repo/repo" in msg
+
+    def test_failure_without_token_hints_inject_vcs_token(self) -> None:
+        # Private repos fail without a token; the error must guide the user
+        # to opt in with inject_vcs_token=True (token is not auto-injected).
+        c = self._container(1, b"gh: Could not resolve to a Repository")
+        with pytest.raises(RuntimeError) as exc:
+            _clone_repo_via_network(c, "abc123def456", "owner/private", "/tmp/repo")
+        assert "inject_vcs_token=True" in str(exc.value)
+
+    def test_failure_with_token_omits_hint(self) -> None:
+        # When the token was already injected the hint would be misleading,
+        # so it must be suppressed.
+        c = self._container(1, b"some other gh error")
+        with pytest.raises(RuntimeError) as exc:
+            _clone_repo_via_network(
+                c, "abc123def456", "owner/private", "/tmp/repo",
+                inject_vcs_token=True,
+            )
+        assert "inject_vcs_token=True" not in str(exc.value)

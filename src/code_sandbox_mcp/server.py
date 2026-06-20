@@ -358,10 +358,21 @@ def _clone_repo_via_network(
     container_id: str,
     clone_repo: str,
     clone_dest: str,
+    inject_vcs_token: bool = False,
 ) -> str:
     """Fallback: clone via ``gh repo clone`` when Shiori is unavailable (Issue #146).
 
     Requires network access and ``gh`` installed in the container.
+
+    Note on private repositories (Issue #146, PR #170 review):
+        Network access is auto-enabled for ``clone_repo``, but the VCS
+        token is *not* auto-injected.  Public repos (the common case)
+        clone fine without credentials, and injecting the token
+        unconditionally would expose it to in-container code for no
+        benefit, violating the host-permission-minimization principle.
+        Private repos therefore require the caller to opt in with
+        ``inject_vcs_token=True``; when the clone fails without a token
+        the raised error suggests doing so.
     """
     _validate_clone_repo(clone_repo)
     repo_name = clone_repo.split("/")[-1]
@@ -369,10 +380,15 @@ def _clone_repo_via_network(
     cmd = "gh repo clone " + shlex.quote(clone_repo) + " " + shlex.quote(clone_path)
     exit_code, output = container.exec_run(["/bin/sh", "-c", cmd])
     if exit_code != 0:
-        raise RuntimeError(
-            "gh repo clone failed (exit {}): {}".format(
-                exit_code, output.decode("utf-8", errors="replace").strip()
+        detail = output.decode("utf-8", errors="replace").strip()
+        hint = ""
+        if not inject_vcs_token:
+            hint = (
+                " (if this is a private repository, retry with"
+                " inject_vcs_token=True so gh can authenticate)"
             )
+        raise RuntimeError(
+            "gh repo clone failed (exit {}): {}{}".format(exit_code, detail, hint)
         )
     return "Cloned {} via network into {} in container {}".format(
         clone_repo, clone_path, container_id[:12]
@@ -570,7 +586,13 @@ def sandbox_initialize(
         clone_repo: Optional ``owner/name`` repository to copy from the
                Shiori pre-cloned repos on the host into the container.
                Uses the host path configured via ``--shiori-repos-path``
-               (default: ``None`` = no clone copy).
+               (default: ``None`` = no clone copy).  When Shiori is not
+               configured, falls back to ``gh repo clone`` over the
+               network (``allow_network`` is auto-enabled).  Cloning a
+               *private* repo this way additionally requires
+               ``inject_vcs_token=True`` so ``gh`` can authenticate;
+               the token is not auto-injected because public repos (the
+               common case) do not need it.
         clone_dest: Destination directory in the container for the
                cloned repository (default: ``/tmp/repo``).
                The actual path will be ``{clone_dest}/repo``.
@@ -659,6 +681,7 @@ def sandbox_initialize(
                 try:
                     clone_msg = " " + _clone_repo_via_network(
                         container, cid, clone_repo, clone_dest,
+                        inject_vcs_token,
                     )
                 except Exception as e2:
                     logger.warning("Network clone fallback failed: %s", e2)
@@ -1430,7 +1453,13 @@ def run_container_and_exec(
         clone_repo: Optional ``owner/name`` repository to copy from the
                Shiori pre-cloned repos on the host into the container.
                Uses the host path configured via ``--shiori-repos-path``
-               (default: ``None`` = no clone copy).
+               (default: ``None`` = no clone copy).  When Shiori is not
+               configured, falls back to ``gh repo clone`` over the
+               network (``allow_network`` is auto-enabled).  Cloning a
+               *private* repo this way additionally requires
+               ``inject_vcs_token=True`` so ``gh`` can authenticate;
+               the token is not auto-injected because public repos (the
+               common case) do not need it.
         clone_dest: Destination directory in the container for the
                cloned repository (default: ``/tmp/repo``).
                The actual path will be ``{clone_dest}/repo``.
@@ -1529,6 +1558,7 @@ def run_container_and_exec(
                 try:
                     _clone_repo_via_network(
                         container, container_id, clone_repo, clone_dest,
+                        inject_vcs_token,
                     )
                 except Exception as e2:
                     logger.warning("Network clone fallback failed: %s", e2)
