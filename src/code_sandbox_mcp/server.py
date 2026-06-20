@@ -1254,7 +1254,7 @@ def write_file_sandbox(
     except Exception as e:
         return f"Error: {e}"
 
-    dest_path = f"{dest_dir}/{file_name}"
+    dest_path = os.path.join(dest_dir, file_name)
 
     # Validate mutual exclusivity
     has_line_range = start_line is not None or end_line is not None
