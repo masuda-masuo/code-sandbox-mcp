@@ -21,6 +21,7 @@ import tarfile
 import tempfile
 import threading
 import time
+from datetime import datetime
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -105,6 +106,7 @@ _TERMINAL: str | None = None
 _UPDATE_SPEC: str = str(Path(__file__).resolve().parent.parent.parent)
 _UPDATE_LOG_DIR: Path | None = None
 _CURRENT_UPDATE_LOG_PATH: str | None = None
+_UPDATE_LOCK: threading.Lock = threading.Lock()
 #: Shiori repos root path on the host for cp-by-pass git clone (Issue #84).
 #: Set via ``--shiori-repos-path`` CLI arg or ``SHIORI_REPOS_PATH`` env var.
 #: When set, ``sandbox_initialize`` and ``run_container_and_exec`` can use
@@ -1205,7 +1207,8 @@ def _start_update_internal() -> str:
 
     log_path = log_dir / "update.log"
     global _CURRENT_UPDATE_LOG_PATH
-    _CURRENT_UPDATE_LOG_PATH = str(log_path)
+    with _UPDATE_LOCK:
+        _CURRENT_UPDATE_LOG_PATH = str(log_path)
 
     # Open a terminal window if configured
     if _TERMINAL:
@@ -1224,7 +1227,7 @@ def _start_update_internal() -> str:
 def _run_update_background(log_path: str) -> None:
     """Run pip install in a subprocess, streaming output to the log."""
     with open(log_path, "w", buffering=1) as log_f:
-        log_f.write(f"=== Update started (spec: {_UPDATE_SPEC}) ===\n")
+        log_f.write(f"=== Update started (spec: {_UPDATE_SPEC}) @ {datetime.now().isoformat()} ===\n")
         log_f.flush()
 
         proc = subprocess.Popen(
@@ -1239,7 +1242,7 @@ def _run_update_background(log_path: str) -> None:
             log_f.write("=== Update succeeded ===\n")
             log_f.flush()
             logger.info("Update succeeded, restarting...")
-            sys.exit(RESTART_EXIT_CODE)
+            os._exit(RESTART_EXIT_CODE)
         else:
             log_f.write(f"=== Update failed (exit code: {proc.returncode}) ===\n")
             log_f.flush()
@@ -1258,17 +1261,18 @@ def _open_update_terminal(terminal: str, log_path: str) -> None:
             "powershell.exe",
             "-NoExit",
             "-Command",
-            f"Get-Content -Wait '{log_path}'",
+            f"Get-Content -Wait {shlex.quote(log_path)}",
         ]
     elif sys.platform == "darwin":
+        quoted = shlex.quote(log_path)
         cmd = [
             "osascript",
             "-e",
-            f'tell application "Terminal" to do script "tail -f {log_path}"',
+            f'tell application "Terminal" to do script "tail -f {quoted}"',
         ]
     else:
         if shutil.which("xterm"):
-            cmd = ["xterm", "-e", f"tail -f {log_path}"]
+            cmd = ["xterm", "-e", f"tail -f {shlex.quote(log_path)}"]
         else:
             logger.warning("No terminal emulator found, log at %s", log_path)
             return
@@ -1298,10 +1302,12 @@ def sandbox_update_check() -> str:
     * ``"Status: error\nError: <message>"``
     * ``"Error: job {job_id} not found"``
     """
-    if not _CURRENT_UPDATE_LOG_PATH:
+    with _UPDATE_LOCK:
+        log_path_str = _CURRENT_UPDATE_LOG_PATH
+    if not log_path_str:
         return "Error: no update job found"
 
-    log_path = Path(_CURRENT_UPDATE_LOG_PATH)
+    log_path = Path(log_path_str)
     if not log_path.exists():
         return "Error: update log not found"
 
@@ -1313,20 +1319,23 @@ def sandbox_update_check() -> str:
     if not log_text:
         return "Status: running (elapsed: 0s)"
 
-    # Calculate elapsed time from file modification time
-    mtime = log_path.stat().st_mtime
-    start_line = None
+    # Parse start timestamp from the log header
+    start_ts = None
     for line in log_text.splitlines():
-        if "=== Update started" in line:
-            start_line = line
+        if "@ " in line and "=== Update started" in line:
+            try:
+                ts_str = line.split("@ ")[1].rstrip(" =")
+                start_ts = datetime.fromisoformat(ts_str)
+            except (ValueError, IndexError):
+                pass
             break
 
-    if start_line is None:
+    if start_ts is None:
         return "Error: no update start marker found in log"
 
-    # Try to parse elapsed from start marker
-    elapsed = time.time() - mtime
-    elapsed_str = f"{int(elapsed)}s"
+    elapsed = datetime.now() - start_ts
+    total_seconds = int(elapsed.total_seconds())
+    elapsed_str = f"{total_seconds}s"
 
     if "=== Update succeeded ===" in log_text:
         return f"Status: done (elapsed: {elapsed_str})"

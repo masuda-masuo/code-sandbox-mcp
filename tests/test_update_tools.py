@@ -1,6 +1,8 @@
 """Tests for the update MCP tools (sandbox_update_start / sandbox_update_check)."""
 from __future__ import annotations
 
+import pytest
+
 from code_sandbox_mcp.server import (
     _CURRENT_UPDATE_LOG_PATH,
     _UPDATE_SPEC,
@@ -20,57 +22,60 @@ class TestSandboxUpdateStart:
 
 
 
+@pytest.fixture
+def srv_module():
+    import code_sandbox_mcp.server as srv
+    return srv
+
+
 class TestSandboxUpdateCheck:
     """Tests for sandbox_update_check()."""
 
-    def test_no_job_returns_error(self, monkeypatch) -> None:
-        import code_sandbox_mcp.server as srv
-        monkeypatch.setattr(srv, "_CURRENT_UPDATE_LOG_PATH", None)
+    def test_no_job_returns_error(self, monkeypatch, srv_module) -> None:
+        monkeypatch.setattr(srv_module, "_CURRENT_UPDATE_LOG_PATH", None)
         result = sandbox_update_check()
         assert "no update job found" in result
 
-    def test_log_not_found_returns_error(self, monkeypatch, tmp_path) -> None:
-        import code_sandbox_mcp.server as srv
+    def test_log_not_found_returns_error(self, monkeypatch, tmp_path, srv_module) -> None:
         nonexistent = str(tmp_path / "nonexistent" / "update.log")
-        monkeypatch.setattr(srv, "_CURRENT_UPDATE_LOG_PATH", nonexistent)
+        monkeypatch.setattr(srv_module, "_CURRENT_UPDATE_LOG_PATH", nonexistent)
         result = sandbox_update_check()
         assert "update log not found" in result
 
-    def test_running_status(self, monkeypatch, tmp_path) -> None:
-        import code_sandbox_mcp.server as srv
+    def test_running_status(self, monkeypatch, tmp_path, srv_module) -> None:
         log_path = tmp_path / "update.log"
         log_path.write_text(
-            "=== Update started (spec: test) ===\n"
+            "=== Update started (spec: test) @ 2026-01-01T00:00:00 ===\n"
             "Collecting package...\n"
         )
-        monkeypatch.setattr(srv, "_CURRENT_UPDATE_LOG_PATH", str(log_path))
+        monkeypatch.setattr(srv_module, "_CURRENT_UPDATE_LOG_PATH", str(log_path))
         result = sandbox_update_check()
         assert "Status: running" in result
 
-    def test_done_status(self, monkeypatch, tmp_path) -> None:
-        import code_sandbox_mcp.server as srv
+    def test_done_status(self, monkeypatch, tmp_path, srv_module) -> None:
         log_path = tmp_path / "update.log"
         log_path.write_text(
-            "=== Update started (spec: test) ===\n"
+            "=== Update started (spec: test) @ 2026-01-01T00:00:00 ===\n"
             "Installing...\n"
             "=== Update succeeded ===\n"
         )
-        monkeypatch.setattr(srv, "_CURRENT_UPDATE_LOG_PATH", str(log_path))
+        monkeypatch.setattr(srv_module, "_CURRENT_UPDATE_LOG_PATH", str(log_path))
         result = sandbox_update_check()
         assert "Status: done" in result
 
-    def test_error_status(self, monkeypatch, tmp_path) -> None:
-        import code_sandbox_mcp.server as srv
+    def test_error_status(self, monkeypatch, tmp_path, srv_module) -> None:
         log_path = tmp_path / "update.log"
         log_path.write_text(
-            "=== Update started (spec: test) ===\n"
+            "=== Update started (spec: test) @ 2026-01-01T00:00:00 ===\n"
             "ERROR: Something went wrong\n"
             "=== Update failed (exit code: 1) ===\n"
         )
-        monkeypatch.setattr(srv, "_CURRENT_UPDATE_LOG_PATH", str(log_path))
+        monkeypatch.setattr(srv_module, "_CURRENT_UPDATE_LOG_PATH", str(log_path))
         result = sandbox_update_check()
         assert "Status: error" in result
         assert "exit code: 1" in result
+
+
 class TestUpdateSpecDefault:
     """Tests for the update spec default value."""
 
