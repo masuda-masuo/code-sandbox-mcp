@@ -3124,7 +3124,7 @@ def sandbox_create_pr(
     script_b64 = base64.b64encode(
         _SANDBOX_CREATE_PR_SCRIPT.encode("utf-8")
     ).decode("ascii")
-    _run(f"echo {script_b64} | base64 -d > /tmp/_sandbox_create_pr.py")
+    _run(f"echo {shlex.quote(script_b64)} | base64 -d > /tmp/_sandbox_create_pr.py")
 
     # Execute: push via GitHub API
     ec, out, _ = _run(
@@ -3173,9 +3173,9 @@ def sandbox_create_pr(
         base_cmd = pr_cmd
         pr_cmd = (
             f"BODY_FILE=$(mktemp) &&"
+            f" trap 'rm -f \"$BODY_FILE\"' EXIT &&"
             f" echo {shlex.quote(body_b64)} | base64 -d > \"$BODY_FILE\" &&"
-            f" {base_cmd} --body-file \"$BODY_FILE\" &&"
-            f" rm -f \"$BODY_FILE\""
+            f" {base_cmd} --body-file \"$BODY_FILE\""
         )
 
     pr_ec, pr_out, _ = _run(pr_cmd)

@@ -968,3 +968,73 @@ class TestSandboxCreatePr:
         )
         assert result["status"] == "error"
         assert "invalid" in result["error"]
+
+    @patch("code_sandbox_mcp.server._docker")
+    def test_invalid_base_branch_name(self, mock_docker: MagicMock) -> None:
+        container = _make_container_mock([])
+        client = _make_client_mock(container)
+        mock_docker.return_value = client
+
+        result = _decode(
+            sandbox_create_pr(
+                container_id="abc123def456",
+                repo="owner/repo",
+                branch="feat/x",
+                pr_title="Test PR",
+                base_branch="feat;rm -rf /",
+            )
+        )
+        assert result["status"] == "error"
+        assert "base_branch" in result["error"]
+
+    @patch("code_sandbox_mcp.server.record_boundary_crossing")
+    @patch("code_sandbox_mcp.server._docker")
+    def test_json_parse_error_returns_error(
+        self, mock_docker: MagicMock, mock_record: MagicMock
+    ) -> None:
+        """If the push script exits 0 but outputs invalid JSON, status=error is returned."""
+        container = _make_container_mock([
+            (0, b"", b""),
+            (0, b"not-json", b""),
+        ])
+        client = _make_client_mock(container)
+        mock_docker.return_value = client
+
+        result = _decode(
+            sandbox_create_pr(
+                container_id="abc123def456",
+                repo="owner/repo",
+                branch="feat/x",
+                pr_title="Test PR",
+            )
+        )
+        assert result["status"] == "error"
+        assert result["step"] == "api_push"
+        mock_record.assert_called_once()
+        assert mock_record.call_args[1]["approved"] is False
+
+    @patch("code_sandbox_mcp.server.record_boundary_crossing")
+    @patch("code_sandbox_mcp.server._docker")
+    def test_push_result_error_key_returns_error(
+        self, mock_docker: MagicMock, mock_record: MagicMock
+    ) -> None:
+        """If the push script exits 0 but JSON contains 'error' key, status=error is returned."""
+        container = _make_container_mock([
+            (0, b"", b""),
+            (0, b'{"error": "blob creation failed"}', b""),
+        ])
+        client = _make_client_mock(container)
+        mock_docker.return_value = client
+
+        result = _decode(
+            sandbox_create_pr(
+                container_id="abc123def456",
+                repo="owner/repo",
+                branch="feat/x",
+                pr_title="Test PR",
+            )
+        )
+        assert result["status"] == "error"
+        assert "blob creation failed" in result.get("error", "")
+        mock_record.assert_called_once()
+        assert mock_record.call_args[1]["approved"] is False
