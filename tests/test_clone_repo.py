@@ -373,12 +373,15 @@ class TestRunContainerAndExecCloneRepo:
     @patch("code_sandbox_mcp.server._clone_shiori_repo_to_container")
     @patch("code_sandbox_mcp.server._docker")
     @patch("code_sandbox_mcp.server.validate_image_ref")
+    @patch("code_sandbox_mcp.server._SHIORI_REPOS_PATH", "/some/repos")
     def test_clone_error_reported_in_result(
         self,
         mock_validate: MagicMock,
         mock_docker: MagicMock,
         mock_clone: MagicMock,
     ) -> None:
+        # When Shiori IS configured but the clone fails with ValueError,
+        # the error should be reported as clone_warning (Issue #84).
         mock_container = MagicMock()
         mock_container.id = "abc123def456"
         mock_container.exec_run.return_value = (0, (b"test output", b""))
@@ -395,6 +398,38 @@ class TestRunContainerAndExecCloneRepo:
 
         assert result["status"] == "ok"
         assert result["clone_warning"] == "path not found"
+
+    @patch("code_sandbox_mcp.server._clone_repo_via_network")
+    @patch("code_sandbox_mcp.server._clone_shiori_repo_to_container")
+    @patch("code_sandbox_mcp.server._docker")
+    @patch("code_sandbox_mcp.server.validate_image_ref")
+    def test_network_fallback_when_shiori_not_configured(
+        self,
+        mock_validate: MagicMock,
+        mock_docker: MagicMock,
+        mock_shiori_clone: MagicMock,
+        mock_net_clone: MagicMock,
+    ) -> None:
+        # When Shiori is NOT configured and _clone_shiori_repo_to_container
+        # raises ValueError, the network fallback should be used (Issue #146).
+        mock_container = MagicMock()
+        mock_container.id = "abc123def456"
+        mock_container.exec_run.return_value = (0, (b"test output", b""))
+        mock_client = MagicMock()
+        mock_client.containers.run.return_value = mock_container
+        mock_docker.return_value = mock_client
+        mock_shiori_clone.side_effect = ValueError("Shiori repos path is not configured")
+        mock_net_clone.return_value = "Cloned owner/repo via network"
+
+        result = json.loads(run_container_and_exec(
+            image="python@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            commands=["echo hello"],
+            clone_repo="owner/repo",
+        ))
+
+        assert result["status"] == "ok"
+        assert "clone_warning" not in result
+        mock_net_clone.assert_called_once()
 
     @patch("code_sandbox_mcp.server._clone_shiori_repo_to_container")
     @patch("code_sandbox_mcp.server._docker")
