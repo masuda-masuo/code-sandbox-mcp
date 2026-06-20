@@ -21,6 +21,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import hashlib
 from datetime import datetime
 from dataclasses import replace
 from pathlib import Path
@@ -42,9 +43,13 @@ from code_sandbox_mcp.edit_verify import (
     write_file,
 )
 from code_sandbox_mcp.output_control import (
+    OutputMetadata,
+    compress_failures,
     compress_repeated_lines,
+    estimate_tokens,
     paginate_output,
     sanitize_output,
+    truncate_by_tokens,
     truncate_output,
 )
 from code_sandbox_mcp.journal import (
@@ -68,6 +73,13 @@ from code_sandbox_mcp.security import (
     DEFAULT_SECURITY_PROFILE,
     build_secure_run_kwargs,
     validate_image_ref,
+)
+from code_sandbox_mcp.result_cache import (
+    compute_cache_key,
+    get_cached_result,
+    set_cached_result,
+    get_cache_stats,
+    invalidate_cache,
 )
 from code_sandbox_mcp.token import (
     generate_token,
@@ -652,6 +664,7 @@ def sandbox_exec(
     offset: int = 0,
     limit: int = 50,
     timeout: int = 0,
+    max_output_tokens: int = 0,
 ) -> str:
     """Execute commands inside a running sandbox container.
 
@@ -687,6 +700,10 @@ def sandbox_exec(
             is killed and the tool returns ``status="timeout"`` with
             ``exit_code=124`` (the standard exit code for
             ``timeout(1)``).
+        max_output_tokens: Token budget for output (``0`` = no limit).
+            When set, the output is summarised to fit within this many
+            estimated tokens and a ``resource://run/{run_id}/output``
+            handle is included for full retrieval.
 
     Returns:
         JSON string with ``status``, ``output``, and metadata
@@ -697,6 +714,8 @@ def sandbox_exec(
     """
     if timeout < 0:
         return json.dumps({"status": "error", "error": "timeout must be >= 0"})
+    if max_output_tokens < 0:
+        return json.dumps({"status": "error", "error": "max_output_tokens must be >= 0"})
 
     client = _docker()
     try:
@@ -708,6 +727,23 @@ def sandbox_exec(
     except Exception as e:
         return json.dumps({"status": "error", "error": str(e)})
 
+    # --- Result cache lookup ---
+    cache_key = compute_cache_key(container_id[:12], commands)
+    cached = get_cached_result(cache_key)
+    if cached is not None:
+        # Journal the cache hit
+        journal_record_exec(
+            container_id[:12],
+            commands,
+            cached.get("exit_code", 0),
+            verbose=verbose,
+            cached=True,
+            output_size=0,
+        )
+        cached["cached"] = True
+        return json.dumps(cached)
+
+    # --- Execute commands ---
     joined = " && ".join(commands)
     encoded = base64.b64encode(joined.encode("utf-8")).decode("ascii")
     tmpf = f"/tmp/.sx_{os.urandom(4).hex()}.sh"
@@ -739,15 +775,34 @@ def sandbox_exec(
         else:
             raw_output = stdout_text or stderr_text
 
+    raw_size = len(raw_output.encode("utf-8"))
     clean = sanitize_output(raw_output)
+
+    # Compress repeated lines
     compressed = compress_repeated_lines(clean)
-    display, meta = truncate_output(
-        compressed,
-        max_lines=max_lines,
-        verbose=verbose,
-        exit_code=exit_code,
-        stderr=stderr_text,
-    )
+
+    # Compress isomorphic failures
+    if exit_code != 0:
+        compressed = compress_failures(compressed)
+
+    # Token-budget truncation (takes precedence over line-based)
+    if max_output_tokens > 0:
+        display, original_tokens = truncate_by_tokens(compressed, max_output_tokens)
+        meta = OutputMetadata(
+            shown=len(display.split("\n")),
+            total_lines=original_tokens,
+            truncated=original_tokens > max_output_tokens,
+        )
+        display += f"\n[resource: run output available via sandbox_read_journal]"
+    else:
+        display, meta = truncate_output(
+            compressed,
+            max_lines=max_lines,
+            verbose=verbose,
+            exit_code=exit_code,
+            stderr=stderr_text,
+        )
+
     page = paginate_output(display, offset=offset, limit=limit)
 
     if exit_code == 0:
@@ -765,17 +820,24 @@ def sandbox_exec(
         "truncated": meta.truncated,
         "next_offset": page.next_offset,
         "has_more": page.has_more,
+        "cached": False,
     }
     if exit_code != 0:
         result["exit_code"] = exit_code
     if stderr_text and verbose != "error_only":
         result["stderr"] = stderr_text
 
+    # Store in result cache
+    set_cached_result(cache_key, result)
+
     journal_record_exec(
         container_id[:12],
         commands,
         exit_code,
         verbose=verbose,
+        cached=False,
+        output_size=raw_size,
+        max_output_tokens=max_output_tokens if max_output_tokens > 0 else None,
     )
 
     return json.dumps(result)
@@ -1605,6 +1667,7 @@ def run_container_and_exec(
     pr: int | None = None,
     pip_extras: str | None = "[dev]",
     timeout: int = 0,
+    max_output_tokens: int = 0,
 ) -> str:
     """Start a container, execute commands, then remove it (one-shot).
 
@@ -1658,6 +1721,10 @@ def run_container_and_exec(
                is killed and the tool returns ``status="timeout"`` with
                ``exit_code=124`` (the standard exit code for
                ``timeout(1)``).
+        max_output_tokens: Token budget for output (``0`` = no limit).
+               When set, the output is summarised to fit within this many
+               estimated tokens and a ``resource://run/{run_id}/output``
+               handle is included for full retrieval.
 
     Returns:
         JSON string with ``status``, ``output`` (or ``error``),
@@ -1798,20 +1865,36 @@ def run_container_and_exec(
         else:
             raw_output = stderr_text
 
+    raw_size = len(raw_output.encode("utf-8"))
+
     # Sanitize: ANSI, \r, timestamps
     clean = sanitize_output(raw_output)
 
     # Compress repeated lines
     compressed = compress_repeated_lines(clean)
 
-    # Truncate based on verbosity
-    display, meta = truncate_output(
-        compressed,
-        max_lines=max_lines,
-        verbose=verbose,
-        exit_code=exit_code,
-        stderr=stderr_text,
-    )
+    # Compress isomorphic failures
+    if exit_code != 0:
+        compressed = compress_failures(compressed)
+
+    # Token-budget truncation (takes precedence over line-based)
+    if max_output_tokens > 0:
+        display, original_tokens = truncate_by_tokens(compressed, max_output_tokens)
+        meta = OutputMetadata(
+            shown=len(display.split("\n")),
+            total_lines=original_tokens,
+            truncated=original_tokens > max_output_tokens,
+        )
+        display += "\n[resource: run output available via sandbox_read_journal]"
+    else:
+        # Truncate based on verbosity
+        display, meta = truncate_output(
+            compressed,
+            max_lines=max_lines,
+            verbose=verbose,
+            exit_code=exit_code,
+            stderr=stderr_text,
+        )
 
     # Paginate
     page = paginate_output(display, offset=offset, limit=limit)
@@ -1825,6 +1908,7 @@ def run_container_and_exec(
         "truncated": meta.truncated,
         "next_offset": page.next_offset,
         "has_more": page.has_more,
+        "cached": False,
     }
 
     if exit_code != 0:
@@ -1836,11 +1920,18 @@ def run_container_and_exec(
     if pr_error:
         result["pr_warning"] = pr_error
 
+    # Cache the result
+    cache_key = compute_cache_key(container_id, commands)
+    set_cached_result(cache_key, result)
+
     journal_record_exec(
         container_id,
         commands,
         exit_code,
         verbose=verbose,
+        cached=False,
+        output_size=raw_size,
+        max_output_tokens=max_output_tokens if max_output_tokens > 0 else None,
     )
     if allow_network or inject_vcs_token:
         record_boundary_crossing(
@@ -1852,6 +1943,247 @@ def run_container_and_exec(
     record_stop(container_id)
     return json.dumps(result)
 
+
+
+# ---------------------------------------------------------------------------
+# Token reduction / result cache tools (§3)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def rerun_failed(
+    container_id: str,
+    run_id: str,
+    commands: list[str] | None = None,
+    verbose: str = "summary",
+    max_lines: int = 100,
+    offset: int = 0,
+    limit: int = 50,
+    timeout: int = 0,
+) -> str:
+    """Re-run commands from a previous run, returning only the diff.
+
+    Retrieves the journal entries for *run_id*, finds the exec commands
+    that had non-zero exit codes, and re-runs only those. Returns the
+    diff between the original failed output and the new result.
+
+    Args:
+        container_id: 12-character container ID prefix.
+        run_id: The run_id to re-run failed commands from.
+        commands: Optional override — only re-run these specific commands.
+        verbose: Output verbosity.
+        max_lines: Maximum lines to show.
+        offset: Line offset for paging.
+        limit: Maximum lines per page.
+        timeout: Maximum seconds to let each command run.
+
+    Returns:
+        JSON string with diff of changed results.
+    """
+    entries = read_journal(run_id=run_id)
+    if not entries:
+        return json.dumps({"status": "error", "error": f"run_id {run_id} not found"})
+
+    # Filter to exec entries with non-zero exit codes
+    failed: list[dict[str, Any]] = [
+        e for e in entries
+        if e.get("operation") == "exec" and e.get("exit_code", 0) != 0
+    ]
+    if not failed:
+        return json.dumps({"status": "ok", "message": "No failed commands to re-run", "diff": ""})
+
+    # Determine which commands to re-run
+    target_commands = commands if commands is not None else failed[-1].get("commands", [])
+
+    client = _docker()
+    try:
+        container = client.containers.get(container_id)
+    except NotFound:
+        return json.dumps({"status": "error", "error": f"container {container_id[:12]} not found"})
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)})
+
+    # Execute the commands
+    joined = " && ".join(target_commands)
+    encoded = base64.b64encode(joined.encode("utf-8")).decode("ascii")
+    tmpf = f"/tmp/.sx_{os.urandom(4).hex()}.sh"
+    runner = f"timeout {timeout} {tmpf}" if timeout > 0 else tmpf
+    cmd = (
+        f"echo {shlex.quote(encoded)} | base64 -d > {tmpf}"
+        f" && chmod +x {tmpf}"
+        f" && {runner}; rc=$?"
+        f"; rm -f {tmpf}"
+        f"; exit $rc"
+    )
+    new_exit_code, output = container.exec_run(
+        ["/bin/sh", "-c", cmd],
+        stdout=True, stderr=True, demux=True,
+    )
+    stdout_part, stderr_part = output
+    stdout_text = stdout_part.decode("utf-8", errors="replace") if stdout_part else ""
+    stderr_text = stderr_part.decode("utf-8", errors="replace") if stderr_part else ""
+
+    # Build new result
+    if new_exit_code == 0:
+        raw_output = stdout_text
+    else:
+        raw_output = stdout_text + "\n" + stderr_text if stdout_text and stderr_text else (stdout_text or stderr_text)
+
+    clean = sanitize_output(raw_output)
+    compressed = compress_repeated_lines(clean)
+    if new_exit_code != 0:
+        compressed = compress_failures(compressed)
+    display, meta = truncate_output(
+        compressed, max_lines=max_lines, verbose=verbose,
+        exit_code=new_exit_code, stderr=stderr_text,
+    )
+    page = paginate_output(display, offset=offset, limit=limit)
+
+    # Compare with original
+    original_output = failed[-1].get("_cached_output", "")
+    original_status = "failed" if failed[-1].get("exit_code", 0) != 0 else "ok"
+    changed = (new_exit_code == 0) if failed[-1].get("exit_code", 0) != 0 else (new_exit_code != 0)
+
+    result: dict[str, Any] = {
+        "status": "ok" if new_exit_code == 0 else "error",
+        "output": page.content,
+        "shown": meta.shown,
+        "total_lines": meta.total_lines,
+        "truncated": meta.truncated,
+        "next_offset": page.next_offset,
+        "has_more": page.has_more,
+        "previous_status": original_status,
+        "changed": changed,
+    }
+    if new_exit_code != 0:
+        result["exit_code"] = new_exit_code
+
+    journal_record_exec(container_id[:12], target_commands, new_exit_code, verbose=verbose)
+    return json.dumps(result)
+
+
+@mcp.tool()
+def sandbox_cache_stats() -> str:
+    """Return result cache statistics.
+
+    Returns:
+        JSON string with cache stats (total_entries, total_size_bytes,
+        oldest/newest entry timestamps).
+    """
+    stats = get_cache_stats()
+    return json.dumps(stats, ensure_ascii=False)
+
+
+@mcp.tool()
+def sandbox_cache_invalidate(key: str | None = None) -> str:
+    """Invalidate result cache entries.
+
+    Args:
+        key: Optional specific cache key to invalidate.
+             If omitted, all cache entries are invalidated.
+
+    Returns:
+        JSON string with ``invalidated`` count.
+    """
+    count = invalidate_cache(key=key)
+    return json.dumps({"invalidated": count})
+
+
+@mcp.tool()
+def sandbox_exec_diff(
+    container_id: str,
+    commands: list[str],
+    verbose: str = "summary",
+    timeout: int = 0,
+) -> str:
+    """Execute commands and return only the diff from the cached result.
+
+    First execution stores the result in cache.  Subsequent calls
+    with the same container_id and commands return only what changed.
+
+    Args:
+        container_id: 12-character container ID prefix.
+        commands: List of shell commands to execute.
+        verbose: Output verbosity.
+        timeout: Maximum seconds to let the command run.
+
+    Returns:
+        JSON string with ``diff`` containing only changed lines.
+    """
+    cache_key = compute_cache_key(container_id[:12], commands)
+    previous = get_cached_result(cache_key)
+
+    # Execute
+    client = _docker()
+    try:
+        container = client.containers.get(container_id)
+    except NotFound:
+        return json.dumps({"status": "error", "error": f"container {container_id[:12]} not found"})
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)})
+
+    joined = " && ".join(commands)
+    encoded = base64.b64encode(joined.encode("utf-8")).decode("ascii")
+    tmpf = f"/tmp/.sx_{os.urandom(4).hex()}.sh"
+    runner = f"timeout {timeout} {tmpf}" if timeout > 0 else tmpf
+    cmd = (
+        f"echo {shlex.quote(encoded)} | base64 -d > {tmpf}"
+        f" && chmod +x {tmpf}"
+        f" && {runner}; rc=$?"
+        f"; rm -f {tmpf}"
+        f"; exit $rc"
+    )
+    exit_code, output = container.exec_run(
+        ["/bin/sh", "-c", cmd],
+        stdout=True, stderr=True, demux=True,
+    )
+    stdout_part, stderr_part = output
+    stdout_text = stdout_part.decode("utf-8", errors="replace") if stdout_part else ""
+    stderr_text = stderr_part.decode("utf-8", errors="replace") if stderr_part else ""
+
+    if exit_code == 0:
+        raw_output = stdout_text
+    else:
+        raw_output = stdout_text + "\n" + stderr_text if stdout_text and stderr_text else (stdout_text or stderr_text)
+
+    clean = sanitize_output(raw_output)
+    compressed = compress_repeated_lines(clean)
+    if exit_code != 0:
+        compressed = compress_failures(compressed)
+
+    # Compute diff from previous result
+    diff = ""
+    if previous and previous.get("output"):
+        prev_lines = previous["output"].split("\n")
+        curr_lines = compressed.split("\n")
+        diff_lines = list(difflib.unified_diff(
+            prev_lines, curr_lines,
+            fromfile="previous", tofile="current",
+            lineterm="",
+        ))
+        diff = "\n".join(diff_lines)
+
+    display, meta = truncate_output(
+        compressed, max_lines=100, verbose=verbose,
+        exit_code=exit_code, stderr=stderr_text,
+    )
+
+    result: dict[str, Any] = {
+        "status": "ok" if exit_code == 0 else "error",
+        "output": display,
+        "diff": diff,
+        "shown": meta.shown,
+        "total_lines": meta.total_lines,
+        "truncated": meta.truncated,
+        "has_diff": bool(diff),
+    }
+    if exit_code != 0:
+        result["exit_code"] = exit_code
+
+    # Update cache
+    set_cached_result(cache_key, result)
+    journal_record_exec(container_id[:12], commands, exit_code, verbose=verbose)
+    return json.dumps(result)
 
 # ---------------------------------------------------------------------------
 # Edit/Verify tools
