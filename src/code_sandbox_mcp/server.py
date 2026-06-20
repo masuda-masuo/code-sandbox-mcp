@@ -1252,6 +1252,10 @@ def _run_update_background(log_path: str) -> None:
             log_f.write(f"=== Update failed (exit code: {proc.returncode}) ===\n")
             log_f.flush()
             logger.error("Update failed with exit code %d", proc.returncode)
+    global _CURRENT_UPDATE_LOG_PATH
+    with _UPDATE_LOCK:
+        if _CURRENT_UPDATE_LOG_PATH == log_path:
+            _CURRENT_UPDATE_LOG_PATH = None
 
 
 def _open_update_terminal(terminal: str, log_path: str) -> None:
