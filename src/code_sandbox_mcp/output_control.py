@@ -458,6 +458,16 @@ def truncate_by_tokens(
 # ---------------------------------------------------------------------------
 
 
+#: Patterns to normalize error messages before fingerprinting.
+#: Strips line numbers, file paths, and volatile offsets so that
+#: semantically identical failures produce the same fingerprint.
+_NORMALIZE_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r'File "[^"]+", line \d+'), 'File "", line N'),
+    (re.compile(r'line \d+'), 'line N'),
+    (re.compile(r':\d+:\d+'), ':N:N'),
+]
+
+
 #: Common failure patterns to detect for fingerprinting.
 _FAILURE_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"ERROR\s+\w+"),
@@ -479,6 +489,10 @@ def compute_failure_fingerprint(text: str) -> str:
     fingerprint are considered "isomorphic" (same failure type and
     similar location).
 
+    Normalizes file paths and line numbers before fingerprinting so
+    that ``File \"foo.py\", line 42`` and ``File \"bar.py\", line 7``
+    that differ only in location produce the same fingerprint.
+
     Args:
         text: Output text that may contain failure patterns.
 
@@ -486,9 +500,14 @@ def compute_failure_fingerprint(text: str) -> str:
         Hex digest fingerprint string, or empty string if no failure
         patterns are found.
     """
+    # Normalize volatile parts (line numbers, file paths)
+    normalized = text
+    for pat, repl in _NORMALIZE_PATTERNS:
+        normalized = pat.sub(repl, normalized)
+
     matches: list[str] = []
     for pattern in _FAILURE_PATTERNS:
-        m = pattern.search(text)
+        m = pattern.search(normalized)
         if m:
             matches.append(m.group())
     if not matches:

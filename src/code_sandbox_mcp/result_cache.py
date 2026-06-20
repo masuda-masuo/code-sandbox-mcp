@@ -34,7 +34,7 @@ _lock: threading.Lock = threading.Lock()
 
 
 def _ensure_cache_dir() -> None:
-    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    _CACHE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
 
 
 # ---------------------------------------------------------------------------

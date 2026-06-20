@@ -419,6 +419,55 @@ class TestSandboxExec:
 
 
 
+
+    @patch("code_sandbox_mcp.server._docker")
+    @patch("code_sandbox_mcp.server.set_cached_result")
+    @patch("code_sandbox_mcp.server.get_cached_result")
+    def test_cache_hit_returns_cached_result(
+        self,
+        mock_get_cache: MagicMock,
+        mock_set_cache: MagicMock,
+        mock_docker: MagicMock,
+    ) -> None:
+        mock_get_cache.return_value = {"status": "ok", "output": "cached output", "exit_code": 0}
+        mock_container = MagicMock()
+        mock_client = MagicMock()
+        mock_client.containers.get.return_value = mock_container
+        mock_docker.return_value = mock_client
+        result = json.loads(sandbox_exec(
+            container_id="abc123def456",
+            commands=["echo hello"],
+        ))
+        assert result["status"] == "ok"
+        assert "cached output" in result["output"]
+        assert result.get("cached") is True
+        mock_container.exec_run.assert_not_called()
+
+    @patch("code_sandbox_mcp.server._docker")
+    @patch("code_sandbox_mcp.server.set_cached_result")
+    @patch("code_sandbox_mcp.server.get_cached_result", return_value=None)
+    def test_max_output_tokens_triggers_truncation(
+        self,
+        mock_get_cache: MagicMock,
+        mock_set_cache: MagicMock,
+        mock_docker: MagicMock,
+    ) -> None:
+        long_output = "\n".join(f"line {i}" for i in range(200))
+        mock_container = MagicMock()
+        mock_container.exec_run.return_value = (0, (long_output.encode(), b""))
+        mock_client = MagicMock()
+        mock_client.containers.get.return_value = mock_container
+        mock_docker.return_value = mock_client
+        result = json.loads(sandbox_exec(
+            container_id="abc123def456",
+            commands=["echo long"],
+            max_output_tokens=10,
+        ))
+        assert result["status"] == "ok"
+        assert "truncated" in result.get("output", "")
+
+
+
 class TestCopyProject:
     """Tests for copy_project tool."""
 

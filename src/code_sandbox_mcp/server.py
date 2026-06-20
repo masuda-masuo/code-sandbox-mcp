@@ -728,7 +728,12 @@ def sandbox_exec(
         return json.dumps({"status": "error", "error": str(e)})
 
     # --- Result cache lookup ---
-    cache_key = compute_cache_key(container_id[:12], commands)
+    try:
+        raw = container.image.tags[0] if container.image.tags else container.image.id
+        image_ref = str(raw) if not isinstance(raw, str) else raw
+    except Exception:
+        image_ref = container_id[:12]
+    cache_key = compute_cache_key(image_ref, commands)
     cached = get_cached_result(cache_key)
     if cached is not None:
         # Journal the cache hit
@@ -1921,7 +1926,7 @@ def run_container_and_exec(
         result["pr_warning"] = pr_error
 
     # Cache the result
-    cache_key = compute_cache_key(container_id, commands)
+    cache_key = compute_cache_key(image, commands)
     set_cached_result(cache_key, result)
 
     journal_record_exec(
@@ -2003,6 +2008,10 @@ def rerun_failed(
     except Exception as e:
         return json.dumps({"status": "error", "error": str(e)})
 
+    # Validate commands
+    if not target_commands:
+        return json.dumps({"status": "error", "error": "no commands to re-run"})
+
     # Execute the commands
     joined = " && ".join(target_commands)
     encoded = base64.b64encode(joined.encode("utf-8")).decode("ascii")
@@ -2039,8 +2048,15 @@ def rerun_failed(
     )
     page = paginate_output(display, offset=offset, limit=limit)
 
-    # Compare with original
-    original_output = failed[-1].get("_cached_output", "")
+    # Get original output from cache
+    try:
+        raw = container.image.tags[0] if container.image.tags else container.image.id
+        image_ref = str(raw) if not isinstance(raw, str) else raw
+    except Exception:
+        image_ref = container_id[:12]
+    original_cache_key = compute_cache_key(image_ref, target_commands)
+    cached_original = get_cached_result(original_cache_key)
+    original_output = cached_original.get("output", "") if cached_original else ""
     original_status = "failed" if failed[-1].get("exit_code", 0) != 0 else "ok"
     changed = (new_exit_code == 0) if failed[-1].get("exit_code", 0) != 0 else (new_exit_code != 0)
 
@@ -2095,6 +2111,7 @@ def sandbox_exec_diff(
     commands: list[str],
     verbose: str = "summary",
     timeout: int = 0,
+    max_output_tokens: int = 0,
 ) -> str:
     """Execute commands and return only the diff from the cached result.
 
@@ -2106,13 +2123,13 @@ def sandbox_exec_diff(
         commands: List of shell commands to execute.
         verbose: Output verbosity.
         timeout: Maximum seconds to let the command run.
+        max_output_tokens: Token budget for output (``0`` = no limit).
+            When set, the output is summarised to fit within this many
+            estimated tokens.
 
     Returns:
         JSON string with ``diff`` containing only changed lines.
     """
-    cache_key = compute_cache_key(container_id[:12], commands)
-    previous = get_cached_result(cache_key)
-
     # Execute
     client = _docker()
     try:
@@ -2121,6 +2138,14 @@ def sandbox_exec_diff(
         return json.dumps({"status": "error", "error": f"container {container_id[:12]} not found"})
     except Exception as e:
         return json.dumps({"status": "error", "error": str(e)})
+
+    try:
+        raw = container.image.tags[0] if container.image.tags else container.image.id
+        image_ref = str(raw) if not isinstance(raw, str) else raw
+    except Exception:
+        image_ref = container_id[:12]
+    cache_key = "diff:" + compute_cache_key(image_ref, commands)
+    previous = get_cached_result(cache_key)
 
     joined = " && ".join(commands)
     encoded = base64.b64encode(joined.encode("utf-8")).decode("ascii")
@@ -2163,10 +2188,20 @@ def sandbox_exec_diff(
         ))
         diff = "\n".join(diff_lines)
 
-    display, meta = truncate_output(
-        compressed, max_lines=100, verbose=verbose,
-        exit_code=exit_code, stderr=stderr_text,
-    )
+    # Token-budget truncation (takes precedence over line-based)
+    if max_output_tokens > 0:
+        display, original_tokens = truncate_by_tokens(compressed, max_output_tokens)
+        meta = OutputMetadata(
+            shown=len(display.split("\n")),
+            total_lines=original_tokens,
+            truncated=original_tokens > max_output_tokens,
+        )
+        display += "\n[resource: run output available via sandbox_read_journal]"
+    else:
+        display, meta = truncate_output(
+            compressed, max_lines=100, verbose=verbose,
+            exit_code=exit_code, stderr=stderr_text,
+        )
 
     result: dict[str, Any] = {
         "status": "ok" if exit_code == 0 else "error",

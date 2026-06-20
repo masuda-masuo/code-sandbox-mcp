@@ -163,6 +163,31 @@ class TestCompressFailures:
 # =======================================================================
 
 
+
+    def test_non_consecutive_failures_not_compressed(self) -> None:
+        text = "ERROR test failed\nok line\nERROR test failed\nok line\nERROR test failed"
+        result = compress_failures(text)
+        # Non-consecutive, same errors should NOT be compressed
+        assert "[x" not in result.lower() or "compressed" not in result
+
+    def test_compression_with_consecutive_tracebacks(self) -> None:
+        # Consecutive matching lines should be compressed
+        lines = ["Traceback (most recent call last):"] * 3
+        text = "\n".join(lines)
+        result = compress_failures(text)
+        assert "compressed" in result.lower()
+
+    def test_different_line_numbers_same_fingerprint(self) -> None:
+        fp1 = compute_failure_fingerprint('File "a.py", line 42\nAssertionError')
+        fp2 = compute_failure_fingerprint('File "b.py", line 7\nAssertionError')
+        assert fp1 == fp2, "Line numbers should be normalized"
+
+    def test_different_paths_same_fingerprint(self) -> None:
+        fp1 = compute_failure_fingerprint('File "/a/b/c.py", line 10\nAssertionError')
+        fp2 = compute_failure_fingerprint('File "/x/y/z.py", line 99\nAssertionError')
+        assert fp1 == fp2, "File paths should be normalized"
+
+
 class TestRecordExecCacheFields:
     """Tests for journal record_exec with cached/output_size fields."""
 
@@ -389,6 +414,63 @@ class TestSandboxExecDiff:
 # =======================================================================
 # Helpers
 # =======================================================================
+
+
+
+    @patch("code_sandbox_mcp.server._docker")
+    @patch("code_sandbox_mcp.server.get_cached_result")
+    def test_exec_diff_uses_separate_cache_key(
+        self,
+        mock_get_cache: MagicMock,
+        mock_docker: MagicMock,
+    ) -> None:
+        mock_get_cache.return_value = None
+        mock_container = MagicMock()
+        mock_container.exec_run.return_value = (0, (b"output", b""))
+        mock_client = MagicMock()
+        mock_client.containers.get.return_value = mock_container
+        mock_docker.return_value = mock_client
+        with patch("code_sandbox_mcp.server.set_cached_result") as mock_set:
+            sandbox_exec_diff(
+                container_id="abc123",
+                commands=["echo test"],
+            )
+            # Verify that the cache key uses the "diff:" prefix
+            call_args = mock_set.call_args[0]
+            key = call_args[0]
+            assert key.startswith("diff:"), f"Expected diff: prefix, got {key}"
+
+
+class TestRerunFailedGetCachedResult:
+    def _decode(self, result: str) -> dict:
+        return json.loads(result)
+
+    @patch("code_sandbox_mcp.server._docker")
+    @patch("code_sandbox_mcp.server.read_journal")
+    @patch("code_sandbox_mcp.server.get_cached_result")
+    def test_rerun_with_cached_original_output(
+        self,
+        mock_get_cache: MagicMock,
+        mock_read_journal: MagicMock,
+        mock_docker: MagicMock,
+    ) -> None:
+        mock_read_journal.return_value = [
+            {"operation": "exec", "exit_code": 1, "commands": ["false"]},
+        ]
+        mock_get_cache.return_value = {"output": "original error output"}
+        mock_container = MagicMock()
+        mock_container.exec_run.return_value = (0, (b"rerun ok", b""))
+        mock_client = MagicMock()
+        mock_client.containers.get.return_value = mock_container
+        mock_docker.return_value = mock_client
+        with patch("code_sandbox_mcp.server.set_cached_result"):
+            result = self._decode(rerun_failed(
+                container_id="abc123",
+                run_id="run1",
+                commands=["true"],
+            ))
+            assert result["status"] == "ok"
+
 
 
 def _read_log(path: Path) -> list[dict]:
