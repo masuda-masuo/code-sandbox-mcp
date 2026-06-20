@@ -69,6 +69,7 @@ from code_sandbox_mcp.security import (
 from code_sandbox_mcp.token import (
     generate_token,
     verify_and_consume,
+    verify_token,
     reject_token,
     get_pending_tokens,
 )
@@ -1597,7 +1598,7 @@ def read_file_range(
         return json.dumps({"error": str(e)})
 
     result = read_file_lines(
-        container, file_path, offset=offset, limit=limit
+        _, file_path, offset=offset, limit=limit
     )
     return json.dumps(result)
 
@@ -2221,13 +2222,6 @@ def submit(
             "error": "Token required for execution.  Run with dry_run=True first.",
         })
 
-    token_result = verify_and_consume(token)
-    if token_result is None:
-        return json.dumps({
-            "status": "error",
-            "error": "Token invalid, expired, or already used",
-        })
-
     # --- Verify gate ---
     if os.path.isabs(verify_path):
         verify_path_full = verify_path
@@ -2237,6 +2231,7 @@ def submit(
         client,
         cid,
         verify_path_full,
+        strict=True,
         gate_on_lint_error=gate_on_lint_error,
         gate_on_type_error=gate_on_type_error,
         gate_on_test_fail=gate_on_test_fail,
@@ -2257,6 +2252,14 @@ def submit(
             "status": "rejected",
             "reason": "verify_gate_failed",
             "verify_result": verify_result,
+        })
+
+    # --- Consume token (after gate passes) ---
+    token_result = verify_and_consume(token)
+    if token_result is None:
+        return json.dumps({
+            "status": "error",
+            "error": "Token invalid, expired, or already used",
         })
 
     # --- Git branch check/create ---
@@ -2626,7 +2629,7 @@ def sandbox_approve(token: str) -> str:
     Returns:
         JSON string with ``status`` and metadata, or error details.
     """
-    result = verify_and_consume(token)
+    result = verify_token(token)
     if result is None:
         return json.dumps(
             {

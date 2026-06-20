@@ -105,6 +105,39 @@ def generate_token(
     return token
 
 
+def verify_token(token: str) -> dict[str, Any] | None:
+    """Verify a confirmation token without consuming it (peek).
+
+    Unlike :func:`verify_and_consume`, this function does NOT mark
+    the token as consumed.  Use this for approval flows where the
+    token should remain valid for the subsequent execution step.
+
+    Args:
+        token: The confirmation token string.
+
+    Returns:
+        A dict with token metadata if valid, or ``None`` if
+        invalid/expired/already used.
+    """
+    with _lock:
+        _purge_expired()
+        if token not in _store:
+            return None
+        entry = _store[token]
+        if entry.consumed:
+            return None
+        if time.monotonic() - entry.created_at > entry.ttl_seconds:
+            del _store[token]
+            return None
+        return {
+            "token": entry.token,
+            "operation": entry.operation,
+            "details": entry.details,
+            "container_id": entry.container_id,
+            "run_id": entry.run_id,
+        }
+
+
 def verify_and_consume(token: str) -> dict[str, Any] | None:
     """Verify a confirmation token and mark it as consumed.
 

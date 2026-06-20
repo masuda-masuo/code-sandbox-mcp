@@ -6,6 +6,7 @@ import time
 from code_sandbox_mcp.token import (
     generate_token,
     verify_and_consume,
+    verify_token,
     reject_token,
     get_pending_tokens,
 )
@@ -63,6 +64,37 @@ class TestTokenVerify:
         pending = get_pending_tokens()
         found = [p for p in pending if p["token"] == token]
         assert len(found) == 0
+
+
+class TestTokenVerifyPeek:
+    """Tests for verify_token() (non-consuming peek)."""
+
+    def test_verify_peek_valid_token(self) -> None:
+        token = generate_token("git_push", "push to main", "abc123", "run1")
+        result = verify_token(token)
+        assert result is not None
+        assert result["operation"] == "git_push"
+
+    def test_verify_peek_does_not_consume(self) -> None:
+        token = generate_token("git_push", "push", "abc123", "run1")
+        assert verify_token(token) is not None
+        # verify_and_consume should still work (token not consumed)
+        assert verify_and_consume(token) is not None
+        # Second consume should fail
+        assert verify_and_consume(token) is None
+
+    def test_verify_peek_invalid_token(self) -> None:
+        assert verify_token("nonexistent") is None
+
+    def test_verify_peek_empty_token(self) -> None:
+        assert verify_token("") is None
+
+    def test_verify_peek_token_remains_in_pending(self) -> None:
+        token = generate_token("git_push", "push", "abc123", "run1")
+        verify_token(token)
+        pending = get_pending_tokens()
+        found = [p for p in pending if p["token"] == token]
+        assert len(found) == 1  # not removed by peek
 
 
 class TestTokenReject:
