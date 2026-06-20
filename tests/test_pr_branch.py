@@ -23,8 +23,6 @@ def _make_container_mock(exec_returns: list[tuple[int, tuple[bytes, bytes]]]):
 
 _PR_INFO_JSON = json.dumps({
     "headRefName": "feature-branch",
-    "headRepository": {"name": "repo"},
-    "headRepositoryOwner": {"login": "owner"},
 })
 
 
@@ -110,7 +108,7 @@ class TestSetupPrBranch:
             )
 
     def test_incomplete_pr_info(self):
-        incomplete = json.dumps({"headRefName": "branch"})
+        incomplete = json.dumps({"other_field": "value"})
         container = _make_container_mock([
             (0, (incomplete.encode(), b"")),
         ])

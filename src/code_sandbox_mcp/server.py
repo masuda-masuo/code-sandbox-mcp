@@ -378,7 +378,7 @@ def _setup_pr_branch(
     # Step 1: Get PR head branch info
     gh_info_cmd = (
         f"gh pr view {pr_number} --repo {safe_repo}"
-        f" --json headRefName,headRepository,headRepositoryOwner"
+        f" --json headRefName"
     )
     exit_code, output = container.exec_run(
         ["/bin/sh", "-c", gh_info_cmd],
@@ -402,12 +402,10 @@ def _setup_pr_branch(
             f"Failed to parse PR info JSON: {stdout_text[:200]}"
         )
 
-    head_owner = pr_info.get("headRepositoryOwner", {}).get("login", "")
-    head_name = pr_info.get("headRepository", {}).get("name", "")
     head_ref = pr_info.get("headRefName", "")
-    if not all([head_owner, head_name, head_ref]):
+    if not head_ref:
         raise RuntimeError(
-            f"Incomplete PR info: owner={head_owner!r} name={head_name!r} ref={head_ref!r}"
+            f"Incomplete PR info: head_ref={head_ref!r}"
         )
 
     # Step 2: Clone the base repo
