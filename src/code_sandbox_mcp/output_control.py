@@ -461,6 +461,9 @@ def truncate_by_tokens(
 #: Patterns to normalize error messages before fingerprinting.
 #: Strips line numbers, file paths, and volatile offsets so that
 #: semantically identical failures produce the same fingerprint.
+#: This is intentionally aggressive — even the filename is removed
+#: so that the same error type in different files compresses together
+#: (e.g. ``NameError`` in ``foo.py`` and ``bar.py`` share one fingerprint).
 _NORMALIZE_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r'File "[^"]+", line \d+'), 'File "", line N'),
     (re.compile(r'line \d+'), 'line N'),

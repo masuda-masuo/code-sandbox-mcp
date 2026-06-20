@@ -844,6 +844,7 @@ def sandbox_exec(
         cached=False,
         output_size=raw_size,
         max_output_tokens=max_output_tokens if max_output_tokens > 0 else None,
+        input_hash=input_hash,
     )
 
     return json.dumps(result)
@@ -2056,7 +2057,8 @@ def rerun_failed(
         image_ref = str(raw) if not isinstance(raw, str) else raw
     except Exception:
         image_ref = container_id[:12]
-    original_cache_key = compute_cache_key(image_ref, target_commands)
+    original_input_hash = failed[-1].get("input_hash", "")
+    original_cache_key = compute_cache_key(image_ref, target_commands, input_hash=original_input_hash)
     cached_original = get_cached_result(original_cache_key)
     original_output = cached_original.get("output", "") if cached_original else ""
     original_status = "failed" if failed[-1].get("exit_code", 0) != 0 else "ok"

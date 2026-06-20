@@ -120,6 +120,7 @@ def record_exec(
     cached: bool = False,
     output_size: int = 0,
     max_output_tokens: int | None = None,
+    input_hash: str = "",
 ) -> None:
     run_id = get_or_create_run_id(container_id)
     boundary = allow_network or inject_vcs_token
@@ -137,6 +138,8 @@ def record_exec(
     }
     if max_output_tokens is not None:
         entry["max_output_tokens"] = max_output_tokens
+    if input_hash:
+        entry["input_hash"] = input_hash
     _append_json(entry)
 
 
