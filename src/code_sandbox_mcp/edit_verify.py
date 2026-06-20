@@ -1754,6 +1754,7 @@ def run_verify(
     client: Any,
     container_id: str,
     path: str,
+    strict: bool = False,
     gate_on_lint_error: bool = True,
     gate_on_type_error: bool = False,
     gate_on_test_fail: bool = True,
@@ -1785,6 +1786,9 @@ def run_verify(
         client: Docker client.
         container_id: 12-character container ID prefix.
         path: File or directory path inside the container.
+        strict: When ``True``, missing/unavailable tools cause gate
+            failure (submit mode).  When ``False`` (lenient, interactive
+            verify), passes but sets ``incomplete: true``.
         gate_on_lint_error: Whether lint errors fail the gate
             (default ``True``).
         gate_on_type_error: Whether type-check errors fail the gate
@@ -1841,11 +1845,12 @@ def run_verify(
         for vr in results:
             if vr.status in ("not_available", "error"):
                 incomplete = True
-                # strict gate: verification incomplete -> fail
-                gate_fail_reasons.append(
-                    f"verification incomplete: {vr.tool} {vr.status}"
-                    + (f" ({vr.detail})" if vr.detail else "")
-                )
+                if strict:
+                    # strict gate: verification incomplete -> fail
+                    gate_fail_reasons.append(
+                        f"verification incomplete: {vr.tool} {vr.status}"
+                        + (f" ({vr.detail})" if vr.detail else "")
+                    )
 
     # Lint error gate
     if gate_on_lint_error:

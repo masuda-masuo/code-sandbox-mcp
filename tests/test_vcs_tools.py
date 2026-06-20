@@ -346,15 +346,18 @@ class TestSubmit:
 
     @patch("code_sandbox_mcp.server._docker")
     @patch("code_sandbox_mcp.server.verify_and_consume")
+    @patch("code_sandbox_mcp.server.run_verify")
     @patch("code_sandbox_mcp.server.get_or_create_run_id")
     def test_execute_invalid_token(
         self,
         mock_run_id: MagicMock,
+        mock_gate: MagicMock,
         mock_verify: MagicMock,
         mock_docker: MagicMock,
     ) -> None:
         """dry_run=False with invalid token should return error."""
         mock_run_id.return_value = "run123"
+        mock_gate.return_value = {"gate_passed": True}
         mock_verify.return_value = None  # token invalid
         mock_docker.return_value = _make_client_mock(MagicMock())
 

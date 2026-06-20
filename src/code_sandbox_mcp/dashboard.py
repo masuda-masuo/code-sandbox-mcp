@@ -25,6 +25,7 @@ from code_sandbox_mcp.journal import (
 )
 from code_sandbox_mcp.token import (
     verify_and_consume,
+    verify_token,
     reject_token,
 )
 
@@ -330,7 +331,7 @@ class _DashboardHandler(BaseHTTPRequestHandler):
 
         msg: str
         if path == "/approve":
-            result = verify_and_consume(token)
+            result = verify_token(token)
             if result is None:
                 msg = "<p>Token invalid, expired, or already used.</p><p><a href='/'>← Back to Dashboard</a></p>"
                 self._send_html(msg, code=400)
