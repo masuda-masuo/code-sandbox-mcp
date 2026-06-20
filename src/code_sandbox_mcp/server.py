@@ -2259,6 +2259,9 @@ def submit(
             "verify_result": verify_result,
         })
 
+    # --- Git branch check/create ---
+    _run(f"git checkout -b {shlex.quote(branch)} 2>/dev/null || git checkout {shlex.quote(branch)}")
+
     # --- Git add / commit ---
     add_ec, add_out, add_err = _run("git add -A")
     if add_ec != 0:
