@@ -139,7 +139,16 @@ sandbox_update_start()    → returns job_id
 sandbox_update_check()    → poll until "done"
 ```
 
-The `--update-spec` flag controls the pip install source (default: `"."` for local checkout, or `"git+https://..."`).
+The `--update-spec` flag controls the pip install source (default: `"."`).
+
+> **Note:** The default `"."` only works when running from a local checkout that contains `pyproject.toml`.
+> If you installed via `pip install git+https://...`, you must explicitly set `--update-spec`:
+>
+> ```json
+> "args": ["-m", "code_sandbox_mcp.server", "--update-spec", "git+https://github.com/masuda-masuo/code-sandbox-mcp"]
+> ```
+>
+> Without this, `sandbox_update_start` will fail with `Neither 'setup.py' nor 'pyproject.toml' found`.
 
 ## Available tools
 
