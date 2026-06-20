@@ -2711,7 +2711,6 @@ def _cleanup_test_environment(network_name: str) -> None:
     """Stop and remove all containers and network for a test environment."""
     client = _docker()
     with _TEST_ENV_NETWORKS_LOCK:
-
         container_ids = _TEST_ENV_NETWORKS.pop(network_name, [])
     for cid in container_ids:
         try:
@@ -2804,7 +2803,6 @@ def run_test_environment(
             })
 
         with _TEST_ENV_NETWORKS_LOCK:
-
             _TEST_ENV_NETWORKS[network_name] = []
         # Topological start respecting dependencies
         started_names: set[str] = set()
@@ -2858,7 +2856,6 @@ def run_test_environment(
                 }
 
                 with _TEST_ENV_NETWORKS_LOCK:
-
                     _TEST_ENV_NETWORKS[network_name].append(cid)
                 record_test_environment(cid, [svc_info], "starting")
 
@@ -2897,6 +2894,37 @@ def run_test_environment(
                     started_names.add(svc['name'])
                 else:
                     started_services.append({'name': svc['name'], 'error': 'unresolvable dependency'})
+
+        # Mark all as ready
+        for svc_info in started_services:
+            if "error" not in svc_info:
+                record_test_environment(
+                    svc_info["container_id"],
+                    [svc_info],
+                    "ready",
+                )
+
+        result = {
+            "status": "ok",
+            "environment_id": network_name,
+            "services": started_services,
+            "plan": plan,
+        }
+
+        # Set up automatic cleanup timer if requested
+        if cleanup_after:
+            def _auto_cleanup():
+                import time
+                time.sleep(int(cleanup_after))
+                try:
+                    _cleanup_test_environment(network_name)
+                except Exception:
+                    pass
+            timer = threading.Thread(target=_auto_cleanup, daemon=True)
+            timer.start()
+
+        return json.dumps(result, ensure_ascii=False)
+
     except Exception as e:
         _cleanup_test_environment(network_name)
         return json.dumps({
