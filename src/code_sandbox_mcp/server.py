@@ -14,12 +14,14 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
 import threading
 import time
+from datetime import datetime
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -101,8 +103,10 @@ _DEFAULT_IMAGE: str = "ghcr.io/masuda-masuo/code-sandbox-mcp/sandbox@sha256:1bc3
 
 #: Stdio proxy - shared with launcher via this module variable.
 _TERMINAL: str | None = None
-_UPDATE_SPEC: str = "."
+_UPDATE_SPEC: str = str(Path(__file__).resolve().parent.parent.parent)
 _UPDATE_LOG_DIR: Path | None = None
+_CURRENT_UPDATE_LOG_PATH: str | None = None
+_UPDATE_LOCK: threading.Lock = threading.Lock()
 #: Shiori repos root path on the host for cp-by-pass git clone (Issue #84).
 #: Set via ``--shiori-repos-path`` CLI arg or ``SHIORI_REPOS_PATH`` env var.
 #: When set, ``sandbox_initialize`` and ``run_container_and_exec`` can use
@@ -1192,6 +1196,12 @@ def _start_update_internal() -> str:
     """
     logger.info("Starting update (spec=%s)", _UPDATE_SPEC)
 
+    # Prevent concurrent updates (PR #130)
+    global _CURRENT_UPDATE_LOG_PATH
+    with _UPDATE_LOCK:
+        if _CURRENT_UPDATE_LOG_PATH is not None:
+            return "Error: an update is already in progress"
+
     # Create a unique log directory for this update
     log_dir: Path
     if _UPDATE_LOG_DIR:
@@ -1202,6 +1212,8 @@ def _start_update_internal() -> str:
         log_dir = Path(tempfile.mkdtemp(dir=base))
 
     log_path = log_dir / "update.log"
+    with _UPDATE_LOCK:
+        _CURRENT_UPDATE_LOG_PATH = str(log_path)
 
     # Open a terminal window if configured
     if _TERMINAL:
@@ -1220,7 +1232,7 @@ def _start_update_internal() -> str:
 def _run_update_background(log_path: str) -> None:
     """Run pip install in a subprocess, streaming output to the log."""
     with open(log_path, "w", buffering=1) as log_f:
-        log_f.write(f"=== Update started (spec: {_UPDATE_SPEC}) ===\n")
+        log_f.write(f"=== Update started (spec: {_UPDATE_SPEC}) @ {datetime.now().isoformat()} ===\n")
         log_f.flush()
 
         proc = subprocess.Popen(
@@ -1231,12 +1243,19 @@ def _run_update_background(log_path: str) -> None:
         )
         proc.wait()
 
-    if proc.returncode == 0:
-        # Signal the launcher to restart
-        logger.info("Update succeeded, restarting...")
-        os._exit(RESTART_EXIT_CODE)
-    else:
-        logger.error("Update failed with exit code %d", proc.returncode)
+        if proc.returncode == 0:
+            log_f.write("=== Update succeeded ===\n")
+            log_f.flush()
+            logger.info("Update succeeded, restarting...")
+            os._exit(RESTART_EXIT_CODE)
+        else:
+            log_f.write(f"=== Update failed (exit code: {proc.returncode}) ===\n")
+            log_f.flush()
+            logger.error("Update failed with exit code %d", proc.returncode)
+    global _CURRENT_UPDATE_LOG_PATH
+    with _UPDATE_LOCK:
+        if _CURRENT_UPDATE_LOG_PATH == log_path:
+            _CURRENT_UPDATE_LOG_PATH = None
 
 
 def _open_update_terminal(terminal: str, log_path: str) -> None:
@@ -1251,15 +1270,19 @@ def _open_update_terminal(terminal: str, log_path: str) -> None:
             "powershell.exe",
             "-NoExit",
             "-Command",
-            f"Get-Content -Wait '{log_path}'",
+            f"Get-Content -Wait {shlex.quote(log_path)}",
         ]
     elif sys.platform == "darwin":
-        cmd = ["open", "-a", "Terminal", log_path]
+        quoted = shlex.quote(log_path)
+        cmd = [
+            "osascript",
+            "-e",
+            f'tell application "Terminal" to do script "tail -f {quoted}"',
+        ]
     else:
-        # Linux: try xterm, otherwise just log
-        try:
-            cmd = ["xterm", "-e", f"tail -f {log_path}"]
-        except FileNotFoundError:
+        if shutil.which("xterm"):
+            cmd = ["xterm", "-e", f"tail -f {shlex.quote(log_path)}"]
+        else:
             logger.warning("No terminal emulator found, log at %s", log_path)
             return
     try:
@@ -1288,8 +1311,50 @@ def sandbox_update_check() -> str:
     * ``"Status: error\nError: <message>"``
     * ``"Error: job {job_id} not found"``
     """
-    # This is a stub - actual implementation would check the log file
-    return "Status: running"
+    with _UPDATE_LOCK:
+        log_path_str = _CURRENT_UPDATE_LOG_PATH
+    if not log_path_str:
+        return "Error: no update job found"
+
+    log_path = Path(log_path_str)
+    if not log_path.exists():
+        return "Error: update log not found"
+
+    try:
+        log_text = log_path.read_text()
+    except OSError as e:
+        return f"Error: cannot read update log: {e}"
+
+    if not log_text:
+        return "Status: running (elapsed: 0s)"
+
+    # Parse start timestamp from the log header
+    start_ts = None
+    for line in log_text.splitlines():
+        if "@ " in line and "=== Update started" in line:
+            try:
+                ts_str = line.split("@ ")[1].rstrip(" =")
+                start_ts = datetime.fromisoformat(ts_str)
+            except (ValueError, IndexError):
+                pass
+            break
+
+    if start_ts is None:
+        return "Error: no update start marker found in log"
+
+    elapsed = datetime.now() - start_ts
+    total_seconds = int(elapsed.total_seconds())
+    elapsed_str = f"{total_seconds}s"
+
+    if "=== Update succeeded ===" in log_text:
+        return f"Status: done (elapsed: {elapsed_str})"
+    elif "=== Update failed" in log_text:
+        for line in reversed(log_text.splitlines()):
+            if "=== Update failed" in line:
+                return f"Status: error (elapsed: {elapsed_str})\nError: {line.strip()}"
+        return f"Status: error (elapsed: {elapsed_str})"
+    else:
+        return f"Status: running (elapsed: {elapsed_str})"
 
 
 # ---------------------------------------------------------------------------
