@@ -3051,6 +3051,14 @@ def sandbox_create_pr(
        lint/type-check/test run before push).  Ensure the sandbox passes
        all checks before calling this tool.
 
+    .. warning::
+
+       This tool uses ``PATCH`` with ``force: true`` when updating an
+       existing branch, which will **force-push** and overwrite any
+       commits on *branch* that are not reflected in the container's HEAD
+       tree.  Do not use this tool on shared branches where others may
+       have pushed commits.
+
     Args:
         container_id: 12-character container ID prefix.
         repo: Repository in ``'owner/repo'`` format.
@@ -3109,18 +3117,33 @@ def sandbox_create_pr(
 
     # Execute: push via GitHub API
     ec, out, _ = _run(
-        f"python3 /tmp/_sandbox_create_pr.py {shlex.quote(repo)} {shlex.quote(branch)} {shlex.quote(working_dir)}"
-        f" ; _ec=$? ; rm -f /tmp/_sandbox_create_pr.py ; exit $_ec"
+        f"trap 'rm -f /tmp/_sandbox_create_pr.py' EXIT"
+        f" && python3 /tmp/_sandbox_create_pr.py {shlex.quote(repo)} {shlex.quote(branch)} {shlex.quote(working_dir)}"
     )
     if ec != 0:
+        record_boundary_crossing(
+            cid, "sandbox_create_pr",
+            f"repo={repo} branch={branch} step=api_push error={out[:200]}",
+            approved=False, token="",
+        )
         return json.dumps({"status": "error", "step": "api_push", "error": out})
 
     try:
         push_result = json.loads(out)
     except json.JSONDecodeError:
+        record_boundary_crossing(
+            cid, "sandbox_create_pr",
+            f"repo={repo} branch={branch} step=api_push json_parse_error",
+            approved=False, token="",
+        )
         return json.dumps({"status": "error", "step": "api_push", "error": out})
 
     if "error" in push_result:
+        record_boundary_crossing(
+            cid, "sandbox_create_pr",
+            f"repo={repo} branch={branch} step=api_push error={push_result.get('error', '')!s:.200}",
+            approved=False, token="",
+        )
         return json.dumps({"status": "error", "step": "api_push", **push_result})
 
     new_sha = push_result["sha"]
@@ -3152,9 +3175,10 @@ def sandbox_create_pr(
         })
 
     pr_url = ""
+    _pr_url_marker = f"github.com/{repo}/pull/"
     for line in pr_out.splitlines():
         line = line.strip()
-        if line.startswith("https://github.com/"):
+        if _pr_url_marker in line and line.startswith("https://"):
             pr_url = line
             break
 
