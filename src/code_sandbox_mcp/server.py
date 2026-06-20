@@ -1968,6 +1968,7 @@ def rerun_failed(
     offset: int = 0,
     limit: int = 50,
     timeout: int = 0,
+    input_hash: str = "",
 ) -> str:
     """Re-run commands from a previous run, returning only the diff.
 
@@ -2078,7 +2079,19 @@ def rerun_failed(
     if new_exit_code != 0:
         result["exit_code"] = new_exit_code
 
-    journal_record_exec(container_id[:12], target_commands, new_exit_code, verbose=verbose)
+    # Store new result in cache
+    new_cache_key = compute_cache_key(image_ref, target_commands, input_hash=input_hash)
+    set_cached_result(new_cache_key, result)
+
+    journal_record_exec(
+        container_id[:12],
+        target_commands,
+        new_exit_code,
+        verbose=verbose,
+        cached=False,
+        output_size=len(raw_output.encode("utf-8")),
+        input_hash=input_hash,
+    )
     return json.dumps(result)
 
 
