@@ -26,6 +26,7 @@ from code_sandbox_mcp.result_cache import (
 )
 from code_sandbox_mcp.tools.common import _docker
 
+
 def sandbox_exec(
     container_id: str,
     commands: list[str],
