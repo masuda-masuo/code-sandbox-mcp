@@ -110,6 +110,48 @@ class TestWriteFileSandboxFullOverwrite:
         mock_container.exec_run.assert_called_once()
 
 
+    @patch("code_sandbox_mcp.server._docker")
+    def test_absolute_file_name_ignores_dest_dir(
+        self, mock_docker: MagicMock,
+    ) -> None:
+        """Absolute file_name is used as-is, dest_dir is ignored."""
+        mock_container = MagicMock()
+        mock_container.exec_run.return_value = (0, (b"", b""))
+        mock_client = MagicMock()
+        mock_client.containers.get.return_value = mock_container
+        mock_docker.return_value = mock_client
+
+        result = write_file_sandbox(
+            container_id="abc123",
+            file_name="/tmp/repo/src/foo.py",
+            file_contents="data",
+            dest_dir="/home/sandbox",
+        )
+        assert "Error" not in result
+        assert "/tmp/repo/src/foo.py" in result
+        assert "/home/sandbox" not in result
+
+    @patch("code_sandbox_mcp.server._docker")
+    def test_relative_subpath_file_name_joined_with_dest_dir(
+        self, mock_docker: MagicMock,
+    ) -> None:
+        """Relative file_name with subdirs is joined with dest_dir correctly."""
+        mock_container = MagicMock()
+        mock_container.exec_run.return_value = (0, (b"", b""))
+        mock_client = MagicMock()
+        mock_client.containers.get.return_value = mock_container
+        mock_docker.return_value = mock_client
+
+        result = write_file_sandbox(
+            container_id="abc123",
+            file_name="src/pkg/module.py",
+            file_contents="data",
+            dest_dir="/tmp/repo",
+        )
+        assert "Error" not in result
+        assert "/tmp/repo/src/pkg/module.py" in result
+
+
 class TestWriteFileSandboxLineRange:
     """Tests for start_line / end_line line-range replacement."""
 
