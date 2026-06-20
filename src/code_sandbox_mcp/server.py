@@ -2938,7 +2938,9 @@ if ec != 0:
     print(json.dumps({"error": "git rev-parse HEAD failed", "detail": head_sha}))
     sys.exit(1)
 
-_, commit_msg, _ = _run("git log -1 --format=%B")
+ec_log, commit_msg, _ = _run("git log -1 --format=%B")
+if ec_log != 0 or not commit_msg:
+    commit_msg = "(no commit message)"
 _, author_name, _ = _run("git log -1 --format=%an")
 _, author_email, _ = _run("git log -1 --format=%ae")
 
