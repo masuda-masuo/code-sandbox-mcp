@@ -371,6 +371,7 @@ class TestSubmit:
         assert "invalid" in result["error"].lower()
 
     @patch("code_sandbox_mcp.server._docker")
+    @patch("code_sandbox_mcp.server.verify_token")
     @patch("code_sandbox_mcp.server.verify_and_consume")
     @patch("code_sandbox_mcp.server.run_verify")
     @patch("code_sandbox_mcp.server.record_boundary_crossing")
@@ -381,6 +382,7 @@ class TestSubmit:
         mock_record: MagicMock,
         mock_verify_fn: MagicMock,
         mock_token: MagicMock,
+        mock_verify_token: MagicMock,
         mock_docker: MagicMock,
     ) -> None:
         """Execute with verify gate failure should reject."""
@@ -391,6 +393,13 @@ class TestSubmit:
             "details": "...",
             "container_id": "abc123def456",
             "run_id": "run123",
+        }
+        mock_verify_token.return_value = {
+            "container_id": "abc123def456",
+            "operation": "submit",
+            "details": "...",
+            "run_id": "run123",
+            "token": "tok_good",
         }
         mock_verify_fn.return_value = {
             "status": "failed",
@@ -414,6 +423,7 @@ class TestSubmit:
         assert result["verify_result"]["gate_passed"] is False
 
     @patch("code_sandbox_mcp.server._docker")
+    @patch("code_sandbox_mcp.server.verify_token")
     @patch("code_sandbox_mcp.server.verify_and_consume")
     @patch("code_sandbox_mcp.server.run_verify")
     @patch("code_sandbox_mcp.server.record_boundary_crossing")
@@ -424,6 +434,7 @@ class TestSubmit:
         mock_record: MagicMock,
         mock_verify_fn: MagicMock,
         mock_token: MagicMock,
+        mock_verify_token: MagicMock,
         mock_docker: MagicMock,
     ) -> None:
         """Successful push should return pushed status with sha."""
@@ -434,6 +445,13 @@ class TestSubmit:
             "details": "...",
             "container_id": "abc123def456",
             "run_id": "run123",
+        }
+        mock_verify_token.return_value = {
+            "container_id": "abc123def456",
+            "operation": "submit",
+            "details": "...",
+            "run_id": "run123",
+            "token": "tok_good",
         }
         mock_verify_fn.return_value = {
             "status": "ok",
@@ -466,6 +484,7 @@ class TestSubmit:
         assert result["verify_result"]["gate_passed"] is True
 
     @patch("code_sandbox_mcp.server._docker")
+    @patch("code_sandbox_mcp.server.verify_token")
     @patch("code_sandbox_mcp.server.verify_and_consume")
     @patch("code_sandbox_mcp.server.run_verify")
     @patch("code_sandbox_mcp.server.record_boundary_crossing")
@@ -476,6 +495,7 @@ class TestSubmit:
         mock_record: MagicMock,
         mock_verify_fn: MagicMock,
         mock_token: MagicMock,
+        mock_verify_token: MagicMock,
         mock_docker: MagicMock,
     ) -> None:
         """Successful push + PR creation should include pr_url."""
@@ -486,6 +506,13 @@ class TestSubmit:
             "details": "...",
             "container_id": "abc123def456",
             "run_id": "run123",
+        }
+        mock_verify_token.return_value = {
+            "container_id": "abc123def456",
+            "operation": "submit",
+            "details": "...",
+            "run_id": "run123",
+            "token": "tok_good",
         }
         mock_verify_fn.return_value = {
             "status": "ok",
@@ -519,6 +546,7 @@ class TestSubmit:
         assert result["pr_url"] == "https://github.com/owner/repo/pull/99"
 
     @patch("code_sandbox_mcp.server._docker")
+    @patch("code_sandbox_mcp.server.verify_token")
     @patch("code_sandbox_mcp.server.verify_and_consume")
     @patch("code_sandbox_mcp.server.run_verify")
     @patch("code_sandbox_mcp.server.record_boundary_crossing")
@@ -529,6 +557,7 @@ class TestSubmit:
         mock_record: MagicMock,
         mock_verify_fn: MagicMock,
         mock_token: MagicMock,
+        mock_verify_token: MagicMock,
         mock_docker: MagicMock,
     ) -> None:
         """git commit with 'nothing to commit' should proceed to push."""
@@ -539,6 +568,13 @@ class TestSubmit:
             "details": "...",
             "container_id": "abc123def456",
             "run_id": "run123",
+        }
+        mock_verify_token.return_value = {
+            "container_id": "abc123def456",
+            "operation": "submit",
+            "details": "...",
+            "run_id": "run123",
+            "token": "tok_good",
         }
         mock_verify_fn.return_value = {
             "status": "ok",
@@ -567,6 +603,7 @@ class TestSubmit:
         assert result["status"] == "pushed"
 
     @patch("code_sandbox_mcp.server._docker")
+    @patch("code_sandbox_mcp.server.verify_token")
     @patch("code_sandbox_mcp.server.verify_and_consume")
     @patch("code_sandbox_mcp.server.run_verify")
     @patch("code_sandbox_mcp.server.record_boundary_crossing")
@@ -577,6 +614,7 @@ class TestSubmit:
         mock_record: MagicMock,
         mock_verify_fn: MagicMock,
         mock_token: MagicMock,
+        mock_verify_token: MagicMock,
         mock_docker: MagicMock,
     ) -> None:
         """Push failure should return error status."""
@@ -587,6 +625,13 @@ class TestSubmit:
             "details": "...",
             "container_id": "abc123def456",
             "run_id": "run123",
+        }
+        mock_verify_token.return_value = {
+            "container_id": "abc123def456",
+            "operation": "submit",
+            "details": "...",
+            "run_id": "run123",
+            "token": "tok_good",
         }
         mock_verify_fn.return_value = {
             "status": "ok",
@@ -795,14 +840,19 @@ class TestSubmitTokenFlow:
         token = dry_result["confirmation_token"]
         assert len(token) > 0
 
-        # Step 2: call sandbox_approve (from token.py) to approve
-        from code_sandbox_mcp.token import verify_and_consume
-        approval = verify_and_consume(token)
-        assert approval is not None
+        # Step 2: approve via the real MCP tool. Approval must NOT consume
+        # the token — it only records intent — so the operation it approves
+        # stays executable.
+        from code_sandbox_mcp.server import sandbox_approve
+        from code_sandbox_mcp.token import verify_token, verify_and_consume
+        with patch("code_sandbox_mcp.server.record_boundary_crossing"):
+            approval = _decode(sandbox_approve(token))
+        assert approval["status"] == "ok"
 
-        # Step 3: Now attempt execute with the SAME token (should fail
-        # because it was just consumed by verify_and_consume above)
-        # In the real flow, approve acts on it, then submit consumes it.
-        # Since we already consumed it, the next verify_and_consume will fail.
-        second_consume = verify_and_consume(token)
-        assert second_consume is None  # Already consumed
+        # Token survives approval and is still valid for execute.
+        assert verify_token(token) is not None
+
+        # Step 3: the single execute-time consume succeeds...
+        assert verify_and_consume(token) is not None
+        # ...and the token is one-time: a second consume fails.
+        assert verify_and_consume(token) is None

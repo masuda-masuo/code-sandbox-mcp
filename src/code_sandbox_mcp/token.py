@@ -105,10 +105,63 @@ def generate_token(
     return token
 
 
+def _verify_locked(token: str) -> _TokenEntry | None:
+    """Validate *token* and return its entry, or ``None`` if invalid.
+
+    Caller MUST hold ``_lock``.  Does not mutate ``consumed``; it only
+    purges expired tokens and rejects tokens that are missing, already
+    consumed, or expired.
+    """
+    _purge_expired()
+    entry = _store.get(token)
+    if entry is None:
+        return None
+    if entry.consumed:
+        return None
+    # Double-check expiry
+    if time.monotonic() - entry.created_at > entry.ttl_seconds:
+        del _store[token]
+        return None
+    return entry
+
+
+def _entry_metadata(entry: _TokenEntry) -> dict[str, Any]:
+    return {
+        "token": entry.token,
+        "operation": entry.operation,
+        "details": entry.details,
+        "container_id": entry.container_id,
+        "run_id": entry.run_id,
+    }
+
+
+def verify_token(token: str) -> dict[str, Any] | None:
+    """Verify a confirmation token **without consuming it**.
+
+    Use this for approval/oversight steps (e.g. ``sandbox_approve`` or
+    the dashboard) that need to confirm a token is valid and read its
+    metadata, but must leave it usable for the single consume that
+    happens at execution time.  Non-mutating.
+
+    Args:
+        token: The confirmation token string.
+
+    Returns:
+        A dict with token metadata if valid, or ``None`` if
+        invalid/expired/already used.
+    """
+    with _lock:
+        entry = _verify_locked(token)
+        return _entry_metadata(entry) if entry is not None else None
+
+
 def verify_and_consume(token: str) -> dict[str, Any] | None:
     """Verify a confirmation token and mark it as consumed.
 
     The token is consumed (one-time use) on successful verification.
+    This is the single terminal consume: call it only at the point the
+    boundary-crossing side effect actually executes — never from an
+    approval/oversight step (use :func:`verify_token` there).
 
     Args:
         token: The confirmation token string.
@@ -117,24 +170,11 @@ def verify_and_consume(token: str) -> dict[str, Any] | None:
         A dict with token metadata if valid, or ``None`` if invalid/expired/already used.
     """
     with _lock:
-        _purge_expired()
-        if token not in _store:
-            return None
-        entry = _store[token]
-        if entry.consumed:
-            return None
-        # Double-check expiry
-        if time.monotonic() - entry.created_at > entry.ttl_seconds:
-            del _store[token]
+        entry = _verify_locked(token)
+        if entry is None:
             return None
         entry.consumed = True
-        return {
-            "token": entry.token,
-            "operation": entry.operation,
-            "details": entry.details,
-            "container_id": entry.container_id,
-            "run_id": entry.run_id,
-        }
+        return _entry_metadata(entry)
 
 
 def reject_token(token: str) -> bool:

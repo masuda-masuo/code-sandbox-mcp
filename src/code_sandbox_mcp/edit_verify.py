@@ -1760,6 +1760,7 @@ def run_verify(
     gate_on_scan_error: bool = True,
     gate_on_scan_warning: bool = False,
     language: str | None = None,
+    strict: bool = False,
 ) -> dict[str, Any]:
     """Run lint + type_check + test + scan with language-aware dispatch.
 
@@ -1774,12 +1775,16 @@ def run_verify(
     - ``"error"`` — tool ran but failed (unexpected exit, parse error)
     - ``"skipped"`` — intentionally not run (no layer for this language)
 
-    Gate logic:
-    - **strict** (submit): any ``"not_available"`` or ``"error"``
-      status causes ``gate_passed=false`` with reason
-      ``"verification incomplete: <tool> <status>"``.
-    - **lenient** (interactive verify): passes but returns
-      ``incomplete: true``.
+    Gate logic (controlled by *strict*):
+    - **strict=True** (submit): a ``"not_available"`` or ``"error"``
+      status fails the gate (``gate_passed=false``, reason
+      ``"verification incomplete: <tool> <status>"``) — but only for a
+      layer whose ``gate_on_*`` flag is enabled.  A layer you are not
+      gating on (e.g. types when ``gate_on_type_error=False``) never
+      blocks, even when its tool is missing.
+    - **strict=False** (interactive verify): never fails the gate on
+      tool absence; surfaces ``incomplete: true`` for the caller's
+      information instead.
 
     Args:
         client: Docker client.
@@ -1797,6 +1802,10 @@ def run_verify(
             (default ``False``).
         language: Explicit language override (``"python"``, ``"js"``,
             ``"ts"``, ``"go"``).  Skips auto-detection.
+        strict: When ``True`` (submit), a gating layer that could not run
+            (tool missing / errored) fails the gate.  When ``False``
+            (interactive verify), tool absence is reported via
+            ``incomplete`` but never fails the gate.
 
     Returns:
         A dict with:
@@ -1837,15 +1846,28 @@ def run_verify(
     gate_fail_reasons: list[str] = []
     incomplete = False
 
+    # A layer participates in the gate only if its gate_on_* flag is set.
+    # An unavailable/errored layer fails the gate ("verification incomplete")
+    # only in strict mode (submit) AND only when that layer was actually
+    # gating — e.g. with gate_on_type_error=False, a missing type checker
+    # never blocks.  In lenient mode (interactive verify) we still surface
+    # incomplete=true but never fail the gate on it.
+    layer_gates = {
+        "lint": gate_on_lint_error,
+        "type": gate_on_type_error,
+        "test": gate_on_test_fail,
+        "scan": gate_on_scan_error or gate_on_scan_warning,
+    }
+
     for layer_name, results in layers.items():
         for vr in results:
             if vr.status in ("not_available", "error"):
                 incomplete = True
-                # strict gate: verification incomplete -> fail
-                gate_fail_reasons.append(
-                    f"verification incomplete: {vr.tool} {vr.status}"
-                    + (f" ({vr.detail})" if vr.detail else "")
-                )
+                if strict and layer_gates.get(layer_name, False):
+                    gate_fail_reasons.append(
+                        f"verification incomplete: {vr.tool} {vr.status}"
+                        + (f" ({vr.detail})" if vr.detail else "")
+                    )
 
     # Lint error gate
     if gate_on_lint_error:

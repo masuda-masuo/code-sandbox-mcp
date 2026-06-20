@@ -67,6 +67,7 @@ from code_sandbox_mcp.security import (
 )
 from code_sandbox_mcp.token import (
     generate_token,
+    verify_token,
     verify_and_consume,
     reject_token,
     get_pending_tokens,
@@ -971,7 +972,7 @@ def write_file_sandbox(
     if append or old_str is not None or has_line_range:
         try:
             existing = read_file(container, dest_path)
-        except ValueError as e:
+        except ValueError:
             return f"Error: file {dest_path} not found"
         existing_lines = existing.splitlines()
 
@@ -1541,7 +1542,7 @@ def apply_patch(container_id: str, file_path: str, diff_content: str) -> str:
     """
     client = _docker()
     try:
-        container = client.containers.get(container_id)
+        client.containers.get(container_id)
     except NotFound:
         return f"Error: container {container_id[:12]} not found"
     except Exception as e:
@@ -1589,7 +1590,7 @@ def read_file_range(
     """
     client = _docker()
     try:
-        _ = client.containers.get(container_id)
+        container = client.containers.get(container_id)
     except NotFound:
         return json.dumps({"error": f"Container {container_id[:12]} not found"})
     except Exception as e:
@@ -1833,6 +1834,7 @@ def verify_in_container(
         gate_on_scan_error=gate_on_scan_error,
         gate_on_scan_warning=gate_on_scan_warning,
         language=language,
+        strict=False,
     )
     return json.dumps(result)
 
@@ -2220,7 +2222,12 @@ def submit(
             "error": "Token required for execution.  Run with dry_run=True first.",
         })
 
-    token_result = verify_and_consume(token)
+    # Validate the token but DO NOT consume it yet.  The single one-time
+    # consume happens only once the verify gate passes and we are about to
+    # perform the actual push (below).  This keeps a failed gate (e.g. a
+    # missing tool or a lint finding) from wasting the token: the caller can
+    # fix the issue and retry with the same token while it is unexpired.
+    token_result = verify_token(token)
     if token_result is None:
         return json.dumps({
             "status": "error",
@@ -2242,6 +2249,7 @@ def submit(
         gate_on_scan_error=gate_on_scan_error,
         gate_on_scan_warning=gate_on_scan_warning,
         language=language,
+        strict=True,
     )
 
     if not verify_result.get("gate_passed", False):
@@ -2252,10 +2260,33 @@ def submit(
             approved=False,
             token=token,
         )
-        return json.dumps({
+        # Token intentionally NOT consumed here — the caller can install the
+        # missing tools (or relax the relevant gate_on_* flag) and retry with
+        # the same token while it is unexpired.
+        reasons = verify_result.get("gate_fail_reasons", [])
+        incomplete_only = bool(reasons) and all(
+            r.startswith("verification incomplete") for r in reasons
+        )
+        rejection: dict[str, Any] = {
             "status": "rejected",
-            "reason": "verify_gate_failed",
+            "reason": "verify_incomplete" if incomplete_only else "verify_gate_failed",
             "verify_result": verify_result,
+        }
+        if incomplete_only:
+            rejection["hint"] = (
+                "Required verification tools are not installed in the sandbox "
+                "image. Install them, or set the relevant gate_on_* flag to "
+                "False to push without that layer."
+            )
+        return json.dumps(rejection)
+
+    # Gate passed — consume the token now, at the point of the actual side
+    # effect.  Re-validates atomically; returns None only if it expired during
+    # verification.
+    if verify_and_consume(token) is None:
+        return json.dumps({
+            "status": "error",
+            "error": "Token expired during verification.  Run dry_run again.",
         })
 
     # --- Git add / commit ---
@@ -2622,7 +2653,11 @@ def sandbox_approve(token: str) -> str:
     Returns:
         JSON string with ``status`` and metadata, or error details.
     """
-    result = verify_and_consume(token)
+    # Non-consuming: approval is an oversight step that records intent in
+    # the journal.  The token's single one-time consume happens later, at
+    # the actual side effect (submit execute).  Burning it here would make
+    # the approved operation un-executable (#token-double-consume).
+    result = verify_token(token)
     if result is None:
         return json.dumps(
             {
