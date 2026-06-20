@@ -52,6 +52,7 @@ from code_sandbox_mcp.journal import (
     record_initialize,
     record_stop,
     read_journal,
+    record_test_environment,
     get_runs,
     get_journal_path,
 )
@@ -2685,16 +2686,6 @@ def sandbox_reject(token: str) -> str:
 
 _TEST_ENV_NETWORKS: dict[str, list[str]] = {}
 _TEST_ENV_NETWORKS_LOCK: threading.Lock = threading.Lock()
-
-
-def _find_free_port() -> int:
-    """Return a free TCP port on localhost."""
-    import socket
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        return s.getsockname()[1]
-
-
 def _health_check_tcp(host: str, port: int, timeout: float = 2.0) -> bool:
     """Check if a TCP port is open on *host*."""
     import socket
@@ -2719,14 +2710,14 @@ def _health_check_http(url: str, timeout: float = 5.0) -> bool:
 def _cleanup_test_environment(network_name: str) -> None:
     """Stop and remove all containers and network for a test environment."""
     client = _docker()
-    container_ids = _TEST_ENV_NETWORKS.pop(network_name, [])
+    with _TEST_ENV_NETWORKS_LOCK:
 
+        container_ids = _TEST_ENV_NETWORKS.pop(network_name, [])
     for cid in container_ids:
         try:
             container = client.containers.get(cid)
             container.stop()
             container.remove()
-            from code_sandbox_mcp.journal import record_test_environment
             record_test_environment(cid, [{"name": cid}], "stopped")
             record_stop(cid)
         except Exception:
@@ -2812,8 +2803,9 @@ def run_test_environment(
                 "plan": plan,
             })
 
-        _TEST_ENV_NETWORKS[network_name] = []
+        with _TEST_ENV_NETWORKS_LOCK:
 
+            _TEST_ENV_NETWORKS[network_name] = []
         # Topological start respecting dependencies
         started_names: set[str] = set()
 
@@ -2865,9 +2857,9 @@ def run_test_environment(
                     "ports": ports,
                 }
 
-                _TEST_ENV_NETWORKS[network_name].append(cid)
+                with _TEST_ENV_NETWORKS_LOCK:
 
-                from code_sandbox_mcp.journal import record_test_environment
+                    _TEST_ENV_NETWORKS[network_name].append(cid)
                 record_test_environment(cid, [svc_info], "starting")
 
                 return svc_info
@@ -2895,43 +2887,16 @@ def run_test_environment(
                     still_remaining.append(svc)
             remaining = still_remaining
 
-        for svc in remaining:
-            result = _start_service(svc)
-            if result:
-                started_services.append(result)
-                started_names.add(svc["name"])
-
-        # Mark all as ready
-        for svc_info in started_services:
-            if "error" not in svc_info:
-                from code_sandbox_mcp.journal import record_test_environment
-                record_test_environment(
-                    svc_info["container_id"],
-                    [svc_info],
-                    "ready",
-                )
-
-        result = {
-            "status": "ok",
-            "environment_id": network_name,
-            "services": started_services,
-            "plan": plan,
-        }
-
-        # Set up automatic cleanup timer if requested
-        if cleanup_after:
-            def _auto_cleanup():
-                import time
-                time.sleep(int(cleanup_after))
-                try:
-                    _cleanup_test_environment(network_name)
-                except Exception:
-                    pass
-            timer = threading.Thread(target=_auto_cleanup, daemon=True)
-            timer.start()
-
-        return json.dumps(result, ensure_ascii=False)
-
+        # Check for circular / unresolvable dependencies
+        if remaining:
+            failed_names = [s['name'] for s in remaining]
+            for svc in remaining:
+                result = _start_service(svc)
+                if result and 'error' not in result:
+                    started_services.append(result)
+                    started_names.add(svc['name'])
+                else:
+                    started_services.append({'name': svc['name'], 'error': 'unresolvable dependency'})
     except Exception as e:
         _cleanup_test_environment(network_name)
         return json.dumps({
@@ -2977,6 +2942,8 @@ def wait_for_condition(
     interval: float = 2.0,
     container_id: str | None = None,
     log_pattern: str | None = None,
+ 
+    log_tail: int = 100,
 ) -> str:
     """Wait for a condition to be met, with timeout.
 
@@ -3000,6 +2967,7 @@ def wait_for_condition(
         container_id: Container ID for ``"log"`` condition.
         log_pattern: Regex pattern for log matching.
 
+        log_tail: Number of log lines to check (default 100).
     Returns:
         JSON string with ``status`` (``"ready"`` or ``"timeout"``),
         ``condition_type``, ``target``, and ``elapsed`` seconds.
@@ -3043,7 +3011,7 @@ def wait_for_condition(
                     time.sleep(interval)
                     continue
 
-                logs = container.logs(tail=100, stdout=True, stderr=True)
+                logs = container.logs(tail=log_tail, stdout=True, stderr=True)
                 log_text = logs.decode("utf-8", errors="replace") if logs else ""
                 if re.search(log_pattern, log_text):
                     ready = True
