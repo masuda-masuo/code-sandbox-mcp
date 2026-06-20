@@ -21,7 +21,6 @@ import tarfile
 import tempfile
 import threading
 import time
-import hashlib
 from datetime import datetime
 from dataclasses import replace
 from pathlib import Path
@@ -46,7 +45,6 @@ from code_sandbox_mcp.output_control import (
     OutputMetadata,
     compress_failures,
     compress_repeated_lines,
-    estimate_tokens,
     paginate_output,
     sanitize_output,
     truncate_by_tokens,
@@ -93,6 +91,7 @@ from .tools.exec import (
     sandbox_exec_background,
     sandbox_exec_check,
 )
+from code_sandbox_mcp.tools.common import _docker
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +153,6 @@ mcp = FastMCP("code-sandbox-mcp")
 # ---------------------------------------------------------------------------
 
 
-from code_sandbox_mcp.tools.common import _docker
 
 
 def _container_env(inject_vcs_token: bool = False) -> dict[str, str]:
@@ -947,7 +945,7 @@ def write_file_sandbox(
     if append or old_str is not None or has_line_range:
         try:
             existing = read_file(container, dest_path)
-        except ValueError as e:
+        except ValueError:
             return f"Error: file {dest_path} not found"
         existing_lines = existing.splitlines()
 
@@ -1732,10 +1730,6 @@ def rerun_failed(
         image_ref = str(raw) if not isinstance(raw, str) else raw
     except Exception:
         image_ref = container_id[:12]
-    original_input_hash = failed[-1].get("input_hash", "")
-    original_cache_key = compute_cache_key(image_ref, target_commands, input_hash=original_input_hash)
-    cached_original = get_cached_result(original_cache_key)
-    original_output = cached_original.get("output", "") if cached_original else ""
     original_status = "failed" if failed[-1].get("exit_code", 0) != 0 else "ok"
     changed = (new_exit_code == 0) if failed[-1].get("exit_code", 0) != 0 else (new_exit_code != 0)
 
@@ -1951,7 +1945,7 @@ def apply_patch(container_id: str, file_path: str, diff_content: str) -> str:
     """
     client = _docker()
     try:
-        container = client.containers.get(container_id)
+        client.containers.get(container_id)
     except NotFound:
         return f"Error: container {container_id[:12]} not found"
     except Exception as e:
@@ -2774,7 +2768,7 @@ def submit(
 
     # --- Git identity: set before commit ---
     name_to_use = author_name if author_name is not None else "code-sandbox-mcp[bot]"
-    email_to_use = author_email if author_email is not None else f"code-sandbox-mcp[bot]@users.noreply.github.com"
+    email_to_use = author_email if author_email is not None else "code-sandbox-mcp[bot]@users.noreply.github.com"
     safe_name = shlex.quote(name_to_use)
     safe_email = shlex.quote(email_to_use)
     git_commit_cmd = (
@@ -3313,7 +3307,7 @@ def run_test_environment(
     try:
         # Create network
         try:
-            network = client.networks.create(network_name, driver="bridge")
+            client.networks.create(network_name, driver="bridge")
         except Exception as e:
             return json.dumps({
                 "status": "error",
@@ -3405,7 +3399,6 @@ def run_test_environment(
 
         # Check for circular / unresolvable dependencies
         if remaining:
-            failed_names = [s['name'] for s in remaining]
             for svc in remaining:
                 result = _start_service(svc)
                 if result and 'error' not in result:
