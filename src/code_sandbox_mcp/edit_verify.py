@@ -582,7 +582,7 @@ def _normalize_diff_for_git(diff_content: str) -> str | None:
     for line in diff_content.split("\n"):
         if line.startswith("@@"):
             in_body = True
-        if in_body:
+        if in_body:  # not elif: @@ line must also be appended to body
             # A '--- ' or '+++ ' line inside the body signals a second file
             # header (multi-file diff). apply_patch targets a single file only.
             if body and (line.startswith("--- ") or line.startswith("+++ ")):
@@ -613,10 +613,13 @@ def transform(text):
         fh.write(DIFF)
     errors = []
     for extra in ([], ["--ignore-whitespace"]):
-        proc = subprocess.run(
-            ["git", "apply", "--recount", "-p1", *extra, patch],
-            cwd=d, capture_output=True, text=True,
-        )
+        try:
+            proc = subprocess.run(
+                ["git", "apply", "--recount", "-p1", *extra, patch],
+                cwd=d, capture_output=True, text=True,
+            )
+        except FileNotFoundError:
+            raise RuntimeError("git is not available in this container")
         if proc.returncode == 0:
             with open(target, "r", encoding="utf-8") as fh:
                 return fh.read()
