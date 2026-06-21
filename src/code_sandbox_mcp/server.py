@@ -574,7 +574,7 @@ def _setup_pr_branch(
 
     # Step 4: Install dev dependencies (non-fatal)
     if pip_extras is not None:
-        install_cmd = f"cd {safe_dest} && pip install -e '{pip_extras}' -q"
+        install_cmd = f"cd {safe_dest} && pip install -e '.{pip_extras}' -q"
         exit_code, output = container.exec_run(
             ["/bin/sh", "-c", install_cmd],
             stdout=True,
