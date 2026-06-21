@@ -334,6 +334,12 @@ class TestPipExtrasParam:
             )
 
         assert "PR #136" in result
+        # The editable install must target the repo dir ("."), i.e.
+        # `pip install -e '.[testing]'` -- NOT `pip install -e '[testing]'`,
+        # which is an invalid spec that silently no-ops so the dev install
+        # never takes effect.
+        install_cmd = container.exec_run.call_args_list[3][0][0][2]
+        assert "pip install -e '.[testing]'" in install_cmd
 
     def test_pip_extras_none_skips_install(self):
         # 3 exec calls: gh view, clone, checkout. No pip install.
