@@ -5,12 +5,14 @@ import json
 import os
 from unittest.mock import MagicMock, patch
 
-from code_sandbox_mcp.server import (
+from code_sandbox_mcp.tools.container import (
     _container_env,
+    sandbox_initialize,
+)
+from code_sandbox_mcp.server import (
     copy_file,
     copy_project,
     sandbox_exec,
-    sandbox_initialize,
 )
 
 
@@ -59,9 +61,9 @@ class TestContainerEnv:
 class TestSandboxInitialize:
     """Tests for sandbox_initialize."""
 
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server._ensure_image")
-    @patch("code_sandbox_mcp.server.validate_image_ref")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container._ensure_image")
+    @patch("code_sandbox_mcp.tools.container.validate_image_ref")
     def test_inject_vcs_token_passed_to_container_env(
         self,
         mock_validate: MagicMock,
@@ -86,9 +88,9 @@ class TestSandboxInitialize:
         call_kwargs = mock_client.containers.run.call_args[1]
         assert call_kwargs["environment"].get("GITHUB_TOKEN") == "ghp_fake"
 
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server._ensure_image")
-    @patch("code_sandbox_mcp.server.validate_image_ref")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container._ensure_image")
+    @patch("code_sandbox_mcp.tools.container.validate_image_ref")
     def test_inject_vcs_token_false_omits_tokens(
         self,
         mock_validate: MagicMock,

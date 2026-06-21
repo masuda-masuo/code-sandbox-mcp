@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from code_sandbox_mcp.server import (
+from code_sandbox_mcp.tools.container import (
     _clone_repo_via_network,
     _clone_shiori_repo_to_container,
     _validate_clone_repo,
@@ -63,7 +63,7 @@ class TestCloneShioriRepoToContainer:
 
     def test_invalid_clone_dest(self) -> None:
         with patch(
-            "code_sandbox_mcp.server._SHIORI_REPOS_PATH", "/data/repos"
+            "code_sandbox_mcp.tools.container._SHIORI_REPOS_PATH", "/data/repos"
         ):
             with pytest.raises(ValueError, match="must start with /tmp/"):
                 _clone_shiori_repo_to_container(
@@ -72,7 +72,7 @@ class TestCloneShioriRepoToContainer:
 
     def test_no_shiori_repos_path_configured(self) -> None:
         with patch(
-            "code_sandbox_mcp.server._SHIORI_REPOS_PATH", None
+            "code_sandbox_mcp.tools.container._SHIORI_REPOS_PATH", None
         ):
             with pytest.raises(ValueError, match="not configured"):
                 _clone_shiori_repo_to_container(
@@ -81,7 +81,7 @@ class TestCloneShioriRepoToContainer:
 
     def test_repos_root_not_found(self) -> None:
         with patch(
-            "code_sandbox_mcp.server._SHIORI_REPOS_PATH", "/nonexistent/path"
+            "code_sandbox_mcp.tools.container._SHIORI_REPOS_PATH", "/nonexistent/path"
         ):
             with pytest.raises(ValueError, match="not found"):
                 _clone_shiori_repo_to_container(
@@ -91,7 +91,7 @@ class TestCloneShioriRepoToContainer:
     def test_path_traversal_prevented_by_validate(self) -> None:
         """Path traversal via '../' is caught by _validate_clone_repo format check."""
         with patch(
-            "code_sandbox_mcp.server._SHIORI_REPOS_PATH", "/data/repos"
+            "code_sandbox_mcp.tools.container._SHIORI_REPOS_PATH", "/data/repos"
         ):
             with pytest.raises(ValueError, match="owner/name"):
                 _clone_shiori_repo_to_container(
@@ -102,7 +102,7 @@ class TestCloneShioriRepoToContainer:
         repos_root = tmp_path / "repos"
         repos_root.mkdir()
         with patch(
-            "code_sandbox_mcp.server._SHIORI_REPOS_PATH", str(repos_root)
+            "code_sandbox_mcp.tools.container._SHIORI_REPOS_PATH", str(repos_root)
         ):
             with pytest.raises(ValueError, match="not found"):
                 _clone_shiori_repo_to_container(
@@ -116,7 +116,7 @@ class TestCloneShioriRepoToContainer:
         clone_dir.mkdir(parents=True)
         (clone_dir / "README.md").write_text("hello")
         with patch(
-            "code_sandbox_mcp.server._SHIORI_REPOS_PATH", str(repos_root)
+            "code_sandbox_mcp.tools.container._SHIORI_REPOS_PATH", str(repos_root)
         ):
             with pytest.raises(ValueError, match="no .git directory"):
                 _clone_shiori_repo_to_container(
@@ -139,7 +139,7 @@ class TestCloneShioriRepoToContainer:
         )
 
         with patch(
-            "code_sandbox_mcp.server._SHIORI_REPOS_PATH", str(repos_root)
+            "code_sandbox_mcp.tools.container._SHIORI_REPOS_PATH", str(repos_root)
         ):
             result = _clone_shiori_repo_to_container(
                 mock_container, "abc123", "owner/repo", "/tmp/repo"
@@ -170,7 +170,7 @@ class TestCloneShioriRepoToContainer:
         )
 
         with patch(
-            "code_sandbox_mcp.server._SHIORI_REPOS_PATH", str(repos_root)
+            "code_sandbox_mcp.tools.container._SHIORI_REPOS_PATH", str(repos_root)
         ):
             result = _clone_shiori_repo_to_container(
                 mock_container, "abc123", "owner/repo", "/tmp/repo"
@@ -192,7 +192,7 @@ class TestCloneShioriRepoToContainer:
         mock_container.exec_run.side_effect = Exception("network error")
 
         with patch(
-            "code_sandbox_mcp.server._SHIORI_REPOS_PATH", str(repos_root)
+            "code_sandbox_mcp.tools.container._SHIORI_REPOS_PATH", str(repos_root)
         ):
             result = _clone_shiori_repo_to_container(
                 mock_container, "abc123", "owner/repo", "/tmp/repo"
@@ -220,7 +220,7 @@ class TestCloneShioriRepoToContainer:
         )
 
         with patch(
-            "code_sandbox_mcp.server._SHIORI_REPOS_PATH", str(repos_root)
+            "code_sandbox_mcp.tools.container._SHIORI_REPOS_PATH", str(repos_root)
         ):
             with pytest.raises(RuntimeError, match="Failed to copy repo"):
                 _clone_shiori_repo_to_container(
@@ -231,11 +231,11 @@ class TestCloneShioriRepoToContainer:
 class TestSandboxInitializeCloneRepo:
     """Tests for sandbox_initialize with clone_repo."""
 
-    @patch("code_sandbox_mcp.server._shiori_preclone_exists", return_value=True)
-    @patch("code_sandbox_mcp.server._clone_shiori_repo_to_container")
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server._ensure_image")
-    @patch("code_sandbox_mcp.server.validate_image_ref")
+    @patch("code_sandbox_mcp.tools.container._shiori_preclone_exists", return_value=True)
+    @patch("code_sandbox_mcp.tools.container._clone_shiori_repo_to_container")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container._ensure_image")
+    @patch("code_sandbox_mcp.tools.container.validate_image_ref")
     def test_clone_repo_calls_helper(
         self,
         mock_validate: MagicMock,
@@ -262,10 +262,10 @@ class TestSandboxInitializeCloneRepo:
             mock_container, "abc123def456", "owner/repo", "/tmp/repo",
         )
 
-    @patch("code_sandbox_mcp.server._clone_shiori_repo_to_container")
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server._ensure_image")
-    @patch("code_sandbox_mcp.server.validate_image_ref")
+    @patch("code_sandbox_mcp.tools.container._clone_shiori_repo_to_container")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container._ensure_image")
+    @patch("code_sandbox_mcp.tools.container.validate_image_ref")
     def test_clone_repo_failure_non_fatal(
         self,
         mock_validate: MagicMock,
@@ -288,10 +288,10 @@ class TestSandboxInitializeCloneRepo:
         assert result.startswith("abc123def456")
         assert "clone_repo failed" in result
 
-    @patch("code_sandbox_mcp.server._clone_shiori_repo_to_container")
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server._ensure_image")
-    @patch("code_sandbox_mcp.server.validate_image_ref")
+    @patch("code_sandbox_mcp.tools.container._clone_shiori_repo_to_container")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container._ensure_image")
+    @patch("code_sandbox_mcp.tools.container.validate_image_ref")
     def test_without_clone_repo_works_normally(
         self,
         mock_validate: MagicMock,
@@ -312,11 +312,11 @@ class TestSandboxInitializeCloneRepo:
         assert result == "abc123def456"
         mock_clone.assert_not_called()
 
-    @patch("code_sandbox_mcp.server._shiori_preclone_exists", return_value=True)
-    @patch("code_sandbox_mcp.server._clone_shiori_repo_to_container")
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server._ensure_image")
-    @patch("code_sandbox_mcp.server.validate_image_ref")
+    @patch("code_sandbox_mcp.tools.container._shiori_preclone_exists", return_value=True)
+    @patch("code_sandbox_mcp.tools.container._clone_shiori_repo_to_container")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container._ensure_image")
+    @patch("code_sandbox_mcp.tools.container.validate_image_ref")
     def test_clone_dest_custom(
         self,
         mock_validate: MagicMock,
@@ -342,12 +342,12 @@ class TestSandboxInitializeCloneRepo:
             mock_container, "abc123def456", "owner/repo", "/tmp/proj",
         )
 
-    @patch("code_sandbox_mcp.server._SHIORI_REPOS_PATH", None)
-    @patch("code_sandbox_mcp.server._clone_repo_via_network")
-    @patch("code_sandbox_mcp.server._clone_shiori_repo_to_container")
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server._ensure_image")
-    @patch("code_sandbox_mcp.server.validate_image_ref")
+    @patch("code_sandbox_mcp.tools.container._SHIORI_REPOS_PATH", None)
+    @patch("code_sandbox_mcp.tools.container._clone_repo_via_network")
+    @patch("code_sandbox_mcp.tools.container._clone_shiori_repo_to_container")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container._ensure_image")
+    @patch("code_sandbox_mcp.tools.container.validate_image_ref")
     def test_network_fallback_when_shiori_not_configured(
         self,
         mock_validate: MagicMock,
@@ -386,10 +386,10 @@ class TestSandboxInitializeCloneRepo:
 class TestRunContainerAndExecCloneRepo:
     """Tests for run_container_and_exec with clone_repo."""
 
-    @patch("code_sandbox_mcp.server._shiori_preclone_exists", return_value=True)
-    @patch("code_sandbox_mcp.server._clone_shiori_repo_to_container")
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server.validate_image_ref")
+    @patch("code_sandbox_mcp.tools.container._shiori_preclone_exists", return_value=True)
+    @patch("code_sandbox_mcp.tools.container._clone_shiori_repo_to_container")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container.validate_image_ref")
     def test_clone_repo_called_before_exec(
         self,
         mock_validate: MagicMock,
@@ -417,11 +417,11 @@ class TestRunContainerAndExecCloneRepo:
         assert result["status"] == "ok"
         mock_clone.assert_called_once()
 
-    @patch("code_sandbox_mcp.server._shiori_preclone_exists", return_value=True)
-    @patch("code_sandbox_mcp.server._clone_shiori_repo_to_container")
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server.validate_image_ref")
-    @patch("code_sandbox_mcp.server._SHIORI_REPOS_PATH", "/some/repos")
+    @patch("code_sandbox_mcp.tools.container._shiori_preclone_exists", return_value=True)
+    @patch("code_sandbox_mcp.tools.container._clone_shiori_repo_to_container")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container.validate_image_ref")
+    @patch("code_sandbox_mcp.tools.container._SHIORI_REPOS_PATH", "/some/repos")
     def test_clone_error_reported_in_result(
         self,
         mock_validate: MagicMock,
@@ -450,11 +450,11 @@ class TestRunContainerAndExecCloneRepo:
         assert result["status"] == "ok"
         assert result["clone_warning"] == "path not found"
 
-    @patch("code_sandbox_mcp.server._SHIORI_REPOS_PATH", None)
-    @patch("code_sandbox_mcp.server._clone_repo_via_network")
-    @patch("code_sandbox_mcp.server._clone_shiori_repo_to_container")
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server.validate_image_ref")
+    @patch("code_sandbox_mcp.tools.container._SHIORI_REPOS_PATH", None)
+    @patch("code_sandbox_mcp.tools.container._clone_repo_via_network")
+    @patch("code_sandbox_mcp.tools.container._clone_shiori_repo_to_container")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container.validate_image_ref")
     def test_network_fallback_when_shiori_not_configured(
         self,
         mock_validate: MagicMock,
@@ -483,9 +483,9 @@ class TestRunContainerAndExecCloneRepo:
         assert "clone_warning" not in result
         mock_net_clone.assert_called_once()
 
-    @patch("code_sandbox_mcp.server._clone_shiori_repo_to_container")
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server.validate_image_ref")
+    @patch("code_sandbox_mcp.tools.container._clone_shiori_repo_to_container")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container.validate_image_ref")
     def test_without_clone_repo_normally(
         self,
         mock_validate: MagicMock,
@@ -509,11 +509,11 @@ class TestRunContainerAndExecCloneRepo:
         assert "clone_warning" not in result
 
 
-    @patch("code_sandbox_mcp.server._shiori_preclone_exists", return_value=False)
-    @patch("code_sandbox_mcp.server._clone_repo_via_network")
-    @patch("code_sandbox_mcp.server._clone_shiori_repo_to_container")
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server.validate_image_ref")
+    @patch("code_sandbox_mcp.tools.container._shiori_preclone_exists", return_value=False)
+    @patch("code_sandbox_mcp.tools.container._clone_repo_via_network")
+    @patch("code_sandbox_mcp.tools.container._clone_shiori_repo_to_container")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container.validate_image_ref")
     def test_preclone_absent_falls_back_to_network(
         self,
         mock_validate: MagicMock,
@@ -547,8 +547,8 @@ class TestRunContainerAndExecCloneRepo:
 class TestRunContainerAndExecTimeout:
     """Tests for run_container_and_exec with timeout (Issue #138)."""
 
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server.validate_image_ref")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container.validate_image_ref")
     def test_timeout_applied_in_cmd(
         self,
         mock_validate: MagicMock,
@@ -572,8 +572,8 @@ class TestRunContainerAndExecTimeout:
         cmd = mock_container.exec_run.call_args[0][0][-1]
         assert "timeout 5" in cmd
 
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server.validate_image_ref")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container.validate_image_ref")
     def test_timeout_zero_not_applied(
         self,
         mock_validate: MagicMock,
@@ -596,8 +596,8 @@ class TestRunContainerAndExecTimeout:
         cmd = mock_container.exec_run.call_args[0][0][-1]
         assert "timeout" not in cmd
 
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server.validate_image_ref")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container.validate_image_ref")
     def test_timeout_status_on_exit_124(
         self,
         mock_validate: MagicMock,
@@ -620,8 +620,8 @@ class TestRunContainerAndExecTimeout:
         assert result["status"] == "timeout"
         assert result["exit_code"] == 124
 
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server.validate_image_ref")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container.validate_image_ref")
     def test_exit_124_without_timeout_is_error(
         self,
         mock_validate: MagicMock,
