@@ -83,6 +83,25 @@ class TestRewriteSource:
         assert replacements == []
         assert new_source == source
 
+    def test_triple_single_quote_preserved(self) -> None:
+        source = "patch('''a.b.c''')\n"
+        new_source, _ = fpt.rewrite_source(source, [fpt.Rename("a.b.c", "x.y.z")])
+        assert new_source == "patch('''x.y.z''')\n"
+
+    def test_triple_double_quote_preserved(self) -> None:
+        source = 'patch("""a.b.c""")\n'
+        new_source, _ = fpt.rewrite_source(source, [fpt.Rename("a.b.c", "x.y.z")])
+        assert new_source == 'patch("""x.y.z""")\n'
+
+    def test_implicit_string_concatenation_normalised(self) -> None:
+        # Python's AST folds 'a.b.' 'c' into Constant('a.b.c') and the
+        # end_col_offset covers the full span, so the codemod rewrites the
+        # entire span to a single quoted literal.
+        source = "patch('a.b.' 'c')\n"
+        new_source, replacements = fpt.rewrite_source(source, [fpt.Rename("a.b.c", "x.y.z")])
+        assert len(replacements) == 1
+        assert new_source == "patch('x.y.z')\n"
+
 
 class TestRewritePaths:
     """rewrite_paths previews without writing and applies only with write=True."""

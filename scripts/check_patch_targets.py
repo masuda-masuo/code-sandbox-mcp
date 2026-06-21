@@ -159,7 +159,7 @@ def check_paths(paths: list[Path]) -> list[PatchTargetError]:
     return errors
 
 
-def _ensure_src_importable() -> None:
+def ensure_src_importable() -> None:
     """Make ``src`` importable when running from a checkout without install."""
     repo_root = Path(__file__).resolve().parent.parent
     src = repo_root / "src"
@@ -176,7 +176,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Files or directories to scan (default: tests).",
     )
     args = parser.parse_args(argv)
-    _ensure_src_importable()
+    ensure_src_importable()
 
     paths = [Path(p) for p in (args.paths or ["tests"])]
     errors = check_paths(paths)

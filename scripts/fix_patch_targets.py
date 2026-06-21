@@ -122,7 +122,15 @@ def rewrite_source(source: str, renames: list[Rename]) -> tuple[str, list[Replac
     for lineno, col, end_col, old_val, new_val in sorted(edits, key=lambda e: (e[0], e[1]), reverse=True):
         line = lines[lineno - 1]
         literal = line[col:end_col]
-        quote = literal[0] if literal[:1] in ("'", '"') else '"'
+        # Detect the quote character(s): triple quotes (''' / """) take priority.
+        # Implicit string concatenation ('a.' 'b') is rewritten as a single
+        # quoted literal — the concatenation is normalised away.
+        if literal.startswith('"""') or literal.startswith("'''"):
+            quote = literal[:3]
+        elif literal[:1] in ("'", '"'):
+            quote = literal[0]
+        else:
+            quote = '"'
         lines[lineno - 1] = line[:col] + f"{quote}{new_val}{quote}" + line[end_col:]
     return "".join(lines), replacements
 
@@ -156,7 +164,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         nargs=2,
         action="append",
         metavar=("OLD", "NEW"),
-        dest="moves",
+        dest="renames",
         required=True,
         help="A dotted-path symbol rename, e.g. --move a.b.c x.y.c. Repeatable.",
     )
@@ -182,9 +190,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
-    cpt._ensure_src_importable()
+    cpt.ensure_src_importable()
 
-    renames = [Rename(old, new) for old, new in args.moves]
+    renames = [Rename(old, new) for old, new in args.renames]
     paths = [Path(p) for p in (args.paths or ["tests"])]
     results = rewrite_paths(paths, renames, write=args.write)
 
