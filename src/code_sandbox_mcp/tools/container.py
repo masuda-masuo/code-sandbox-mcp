@@ -55,7 +55,7 @@ from code_sandbox_mcp.security import (
     build_secure_run_kwargs,
     validate_image_ref,
 )
-from code_sandbox_mcp.tools.common import _docker
+from code_sandbox_mcp.tools.common import RECOVERY_DOCKER_TIMEOUT, _docker
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -517,6 +517,8 @@ def sandbox_initialize(
     repo: str | None = None,
     pr: int | None = None,
     pip_extras: str | None = "[dev]",
+    mem_limit: str | None = None,
+    cpus: float | None = None,
 ) -> str:
     """Start a new Docker sandbox container.
 
@@ -567,6 +569,14 @@ def sandbox_initialize(
         pip_extras: Pip extras string (e.g. ``"[dev]"``) for dev install.
                Pass ``None`` to skip pip install entirely.
                Only used when *pr* is specified.
+        mem_limit: Optional memory-limit override (e.g. ``"2g"``).
+               The default profile caps containers at 512MB with swap
+               disabled, which OOM-thrashes heavy installs (e.g. torch)
+               into an unhealthy state (Issue #181).  Raise this when a
+               workload legitimately needs more.  Swap stays disabled at
+               the new ceiling.
+        cpus: Optional CPU-limit override in cores (e.g. ``2.0``).
+               Defaults to the profile's 0.5-core cap when omitted.
 
     The image must be pulled locally before use: docker pull <image>
 
@@ -605,12 +615,28 @@ def sandbox_initialize(
 
     profile = replace(DEFAULT_SECURITY_PROFILE, allow_network=allow_network)
 
+    # Resource overrides (Issue #181): the default 512MB / 0.5-CPU /
+    # no-swap profile is too small for heavy installs (e.g. torch), which
+    # OOM-thrash the container into an unhealthy state.  Let callers raise
+    # the ceiling when they know they need it.  memswap is pinned to
+    # mem_limit so swap stays disabled at the new ceiling (docker also
+    # requires memswap_limit >= mem_limit).
+    resource_overrides: dict[str, Any] = {}
+    if mem_limit is not None:
+        resource_overrides["mem_limit"] = mem_limit
+        resource_overrides["memswap_limit"] = mem_limit
+    if cpus is not None:
+        if cpus <= 0:
+            return "Error: cpus must be > 0"
+        resource_overrides["cpu_quota"] = int(cpus * profile.cpu_period)
+
     run_kwargs = build_secure_run_kwargs(
         profile,
         command="sleep infinity",
         detach=True,
         remove=False,
         environment=env,
+        **resource_overrides,
     )
 
     try:
@@ -672,21 +698,42 @@ def sandbox_stop(container_id: str) -> str:
     Args:
         container_id: 12-character container ID prefix.
 
+    Removal is forceful: the container is killed (SIGKILL) and removed
+    with ``force=True`` rather than gracefully stopped.  A graceful
+    ``stop()`` waits for SIGTERM (up to 10s) then SIGKILL, which can
+    itself hang on a wedged or unhealthy container — defeating the
+    purpose of a recovery tool.  Combined with a short Docker API
+    timeout, this guarantees ``sandbox_stop`` stays responsive even when
+    other operations are stuck (Issue #181).
+
     Returns:
         Success message or error message beginning with ``"Error:"``.
     """
-    client = _docker()
+    client = _docker(timeout=RECOVERY_DOCKER_TIMEOUT)
     cid = container_id[:12]
     try:
         container = client.containers.get(container_id)
-        container.stop()
-        container.remove()
-        record_stop(cid)
-        return f"Container {cid} stopped and removed"
     except NotFound:
         return f"Error: container {cid} not found"
     except Exception as e:
         return f"Error: {e}"
+
+    # Kill first (ignore if already stopped), then force-remove so a
+    # still-running or unresponsive container is torn down regardless.
+    try:
+        container.kill()
+    except (NotFound, APIError):
+        # Already stopped / not running — proceed to removal.
+        pass
+    try:
+        container.remove(force=True)
+    except NotFound:
+        pass
+    except Exception as e:
+        return f"Error: {e}"
+
+    record_stop(cid)
+    return f"Container {cid} stopped and removed"
 
 def sandbox_update_start() -> str:
     """Start an in-place update in the background.

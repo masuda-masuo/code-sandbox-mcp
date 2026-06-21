@@ -26,7 +26,7 @@ from code_sandbox_mcp.result_cache import (
     get_cached_result,
     set_cached_result,
 )
-from code_sandbox_mcp.tools.common import _docker
+from code_sandbox_mcp.tools.common import RECOVERY_DOCKER_TIMEOUT, _docker
 
 
 def sandbox_exec(
@@ -295,7 +295,10 @@ def sandbox_exec_check(container_id: str, job_id: str) -> str:
         Status string: ``"running"`` if still in progress, stdout
         output on success, or ``"Error: ..."`` on failure.
     """
-    client = _docker()
+    # Recovery/poll path: use a short Docker API timeout so a wedged or
+    # unhealthy container fails fast instead of hanging the session
+    # (Issue #181).
+    client = _docker(timeout=RECOVERY_DOCKER_TIMEOUT)
     try:
         container = client.containers.get(container_id)
     except NotFound:
