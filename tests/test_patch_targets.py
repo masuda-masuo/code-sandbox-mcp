@@ -86,7 +86,7 @@ class TestCheckTestSuite:
     """The repository's own test suite must have no unresolved patch targets."""
 
     def test_repo_tests_have_resolvable_patch_targets(self) -> None:
-        cpt._ensure_src_importable()
+        cpt.ensure_src_importable()
         errors = cpt.check_paths([_REPO_ROOT / "tests"])
         assert errors == [], "\n".join(str(e) for e in errors)
 
@@ -95,7 +95,7 @@ class TestCheckFile:
     """check_file flags a drifted target, demonstrating the #154 scenario."""
 
     def test_drifted_target_is_flagged(self, tmp_path: Path) -> None:
-        cpt._ensure_src_importable()
+        cpt.ensure_src_importable()
         test_file = tmp_path / "test_drift.py"
         # _docker exists; _docker_gone does not -> simulates an attribute that
         # was moved out of server.py but is still patched.
