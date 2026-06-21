@@ -10,22 +10,40 @@ Tests cover:
 """
 from __future__ import annotations
 
-import base64
-import re
+import io
+import tarfile
 from unittest.mock import MagicMock, patch
 
 from code_sandbox_mcp.edit_verify import apply_patch_to_file
 from code_sandbox_mcp.server import write_file_sandbox
 
 
+def _exec_run_for(content_bytes: bytes):
+    """Build an ``exec_run`` side effect for the put_archive-based writer.
+
+    Serves ``cat`` reads with *content_bytes* and returns success for the
+    ``mkdir`` / ``stat`` probes that :func:`write_file` issues before
+    streaming the file via ``put_archive``.
+    """
+    def _side_effect(cmd, **kwargs):  # noqa: ANN001, ANN202
+        shell = cmd[2] if isinstance(cmd, (list, tuple)) and len(cmd) > 2 else ""
+        if shell.startswith("cat "):
+            return (0, (content_bytes, b""))
+        return (0, (b"", b""))
+
+    return _side_effect
+
+
 def _get_written_content(mock_container: MagicMock) -> str:
-    """Extract the written file content from the exec_run write command."""
-    call = mock_container.exec_run.call_args_list[-1]
-    cmd = call[0][0][2]
-    match = re.search(r'echo (\S+) \| base64 -d', cmd)
-    if not match:
-        return ""
-    return base64.b64decode(match.group(1)).decode("utf-8")
+    """Extract the written file content from the put_archive tar stream."""
+    call = mock_container.put_archive.call_args
+    assert call is not None, "put_archive was not called"
+    data = call.args[1]
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r") as tar:
+        member = tar.getmembers()[0]
+        extracted = tar.extractfile(member)
+        assert extracted is not None
+        return extracted.read().decode("utf-8")
 
 
 class TestWriteFileSandboxFullOverwrite:
@@ -49,7 +67,7 @@ class TestWriteFileSandboxFullOverwrite:
         assert "Error" not in result
         assert "Written" in result
         assert "hello.txt" in result
-        mock_container.exec_run.assert_called_once()
+        mock_container.put_archive.assert_called_once()
         assert _get_written_content(mock_container) == "new content"
 
     @patch("code_sandbox_mcp.server._docker")
@@ -107,7 +125,7 @@ class TestWriteFileSandboxFullOverwrite:
         assert "Error" not in result
         assert "/home/sandbox" in result
         # Verify exec_run was called
-        mock_container.exec_run.assert_called_once()
+        mock_container.put_archive.assert_called_once()
 
 
     @patch("code_sandbox_mcp.server._docker")
@@ -162,10 +180,7 @@ class TestWriteFileSandboxLineRange:
         content_bytes = content.encode("utf-8") if content else b""
         mock_container = MagicMock()
         # exec_run sequence: test -f (success), cat (content), write (success)
-        mock_container.exec_run.side_effect = [
-            (0, (content_bytes, b"")),
-            (0, (b"", b"")),
-        ]
+        mock_container.exec_run.side_effect = _exec_run_for(content_bytes)
         mock_client = MagicMock()
         mock_client.containers.get.return_value = mock_container
         mock_docker.return_value = mock_client
@@ -322,10 +337,7 @@ class TestWriteFileSandboxAppend:
     ) -> MagicMock:
         content_bytes = content.encode("utf-8") if content else b""
         mock_container = MagicMock()
-        mock_container.exec_run.side_effect = [
-            (0, (content_bytes, b"")),
-            (0, (b"", b"")),
-        ]
+        mock_container.exec_run.side_effect = _exec_run_for(content_bytes)
         mock_client = MagicMock()
         mock_client.containers.get.return_value = mock_container
         mock_docker.return_value = mock_client
@@ -378,10 +390,7 @@ class TestWriteFileSandboxReplace:
     ) -> MagicMock:
         content_bytes = content.encode("utf-8") if content else b""
         mock_container = MagicMock()
-        mock_container.exec_run.side_effect = [
-            (0, (content_bytes, b"")),
-            (0, (b"", b"")),
-        ]
+        mock_container.exec_run.side_effect = _exec_run_for(content_bytes)
         mock_client = MagicMock()
         mock_client.containers.get.return_value = mock_container
         mock_docker.return_value = mock_client
@@ -466,10 +475,7 @@ class TestWriteFileSandboxReplaceEnhanced:
     ) -> MagicMock:
         content_bytes = content.encode("utf-8") if content else b""
         mock_container = MagicMock()
-        mock_container.exec_run.side_effect = [
-            (0, (content_bytes, b"")),
-            (0, (b"", b"")),
-        ]
+        mock_container.exec_run.side_effect = _exec_run_for(content_bytes)
         mock_client = MagicMock()
         mock_client.containers.get.return_value = mock_container
         mock_docker.return_value = mock_client
@@ -793,3 +799,112 @@ class TestApplyPatchJournal:
         assert args[1] == "test.py"
         assert "/root" in args[2]
         assert args[3] > 0
+
+
+class TestWriteFileLargeFile:
+    """Regression tests for Issue #144.
+
+    Large files must not hit the Linux ``MAX_ARG_STRLEN`` limit (128 KiB per
+    single argv string).  The old transport embedded the base64-encoded
+    content in ``echo <b64> | base64 -d``, so files over ~96 KiB failed with
+    ``argument list too long``.  Content is now streamed via ``put_archive``.
+    """
+
+    @patch("code_sandbox_mcp.server._docker")
+    def test_large_overwrite_uses_put_archive_not_argv(
+        self, mock_docker: MagicMock,
+    ) -> None:
+        # ~300 KiB; base64 of this would be ~400 KiB, far over the 128 KiB
+        # single-argv limit that broke the old transport.
+        big = ("x" * 200 + "\n") * 1500
+        assert len(big.encode("utf-8")) > 256 * 1024
+
+        mock_container = MagicMock()
+        mock_container.exec_run.return_value = (0, (b"", b""))
+        mock_client = MagicMock()
+        mock_client.containers.get.return_value = mock_container
+        mock_docker.return_value = mock_client
+
+        result = write_file_sandbox(
+            container_id="abc123",
+            file_name="big.py",
+            file_contents=big,
+            dest_dir="/root",
+        )
+        assert "Error" not in result
+        assert "Written" in result
+
+        # Content went through put_archive (tar stream), not the shell argv.
+        mock_container.put_archive.assert_called_once()
+        assert _get_written_content(mock_container) == big
+
+        # No exec_run command embedded the file content as an argv string.
+        for call in mock_container.exec_run.call_args_list:
+            cmd = call.args[0]
+            joined = " ".join(cmd) if isinstance(cmd, (list, tuple)) else str(cmd)
+            assert len(joined) < 128 * 1024, "file content leaked into argv"
+
+    @patch("code_sandbox_mcp.server._docker")
+    def test_large_old_str_edit(self, mock_docker: MagicMock) -> None:
+        """A line-range/old_str edit of a large file also succeeds."""
+        existing = ("y" * 100 + "\n") * 2000 + "TARGET\n"
+        mock_container = MagicMock()
+        mock_container.exec_run.side_effect = _exec_run_for(
+            existing.encode("utf-8")
+        )
+        mock_client = MagicMock()
+        mock_client.containers.get.return_value = mock_container
+        mock_docker.return_value = mock_client
+
+        result = write_file_sandbox(
+            container_id="abc123",
+            file_name="big.py",
+            file_contents="REPLACED",
+            dest_dir="/root",
+            old_str="TARGET",
+        )
+        assert "Error" not in result
+        assert "Written" in result
+        written = _get_written_content(mock_container)
+        assert written.endswith("REPLACED\n")
+        assert "TARGET" not in written
+
+
+class TestWriteFileOwnership:
+    """Issue #144: put_archive must not leave files owned by root."""
+
+    def test_owner_for_write_preserves_existing(self) -> None:
+        from code_sandbox_mcp.edit_verify import _owner_for_write
+
+        container = MagicMock()
+        # stat of the existing file: uid=1000 gid=1000 mode=644 (octal).
+        container.exec_run.return_value = (0, (b"1000 1000 644\n", b""))
+        uid, gid, mode = _owner_for_write(
+            container, "/home/sandbox/f.py", "/home/sandbox"
+        )
+        assert (uid, gid, mode) == (1000, 1000, 0o644)
+
+    def test_owner_for_write_inherits_parent_for_new_file(self) -> None:
+        from code_sandbox_mcp.edit_verify import _owner_for_write
+
+        container = MagicMock()
+
+        def _side_effect(cmd, **kwargs):  # noqa: ANN001, ANN202
+            shell = cmd[2]
+            if "%a" in shell:  # stat of (missing) target file
+                return (1, (b"", b"No such file"))
+            return (0, (b"1000 1000\n", b""))  # stat of parent dir
+
+        container.exec_run.side_effect = _side_effect
+        uid, gid, mode = _owner_for_write(
+            container, "/home/sandbox/new.py", "/home/sandbox"
+        )
+        assert (uid, gid, mode) == (1000, 1000, 0o644)
+
+    def test_owner_for_write_falls_back_when_stat_unavailable(self) -> None:
+        from code_sandbox_mcp.edit_verify import _owner_for_write
+
+        container = MagicMock()
+        container.exec_run.return_value = (127, (b"", b"stat: not found"))
+        uid, gid, mode = _owner_for_write(container, "/x/f", "/x")
+        assert (uid, gid, mode) == (0, 0, 0o644)
