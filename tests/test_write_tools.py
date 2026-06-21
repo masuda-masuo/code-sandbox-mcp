@@ -18,17 +18,33 @@ from code_sandbox_mcp.edit_verify import apply_patch_to_file
 from code_sandbox_mcp.server import write_file_sandbox
 
 
-def _exec_run_for(content_bytes: bytes):
+def _exec_run_for(
+    content_bytes: bytes,
+    uid: int = 1000,
+    gid: int = 1000,
+    mode: int = 0o644,
+):
     """Build an ``exec_run`` side effect for the put_archive-based writer.
 
-    Serves ``cat`` reads with *content_bytes* and returns success for the
-    ``mkdir`` / ``stat`` probes that :func:`write_file` issues before
-    streaming the file via ``put_archive``.
+    Serves ``cat`` reads with *content_bytes* and mimics the ``stat`` probes
+    that :func:`write_file` issues via ``_owner_for_write`` before streaming
+    the file via ``put_archive``:
+
+    - ``stat -c '%u %g %a'`` (existing file) -> ``uid gid mode``
+    - ``stat -c '%u %g'`` (parent dir) -> ``uid gid``
+
+    Returning real ``stat`` output exercises the ownership-preservation path
+    instead of letting every write fall back to ``0, 0, 0o644``.  Defaults keep
+    existing callers working without changes.
     """
     def _side_effect(cmd, **kwargs):  # noqa: ANN001, ANN202
         shell = cmd[2] if isinstance(cmd, (list, tuple)) and len(cmd) > 2 else ""
         if shell.startswith("cat "):
             return (0, (content_bytes, b""))
+        if shell.startswith("stat -c") and "%a" in shell:
+            return (0, (f"{uid} {gid} {mode:o}\n".encode(), b""))
+        if shell.startswith("stat -c"):
+            return (0, (f"{uid} {gid}\n".encode(), b""))
         return (0, (b"", b""))
 
     return _side_effect
@@ -44,6 +60,19 @@ def _get_written_content(mock_container: MagicMock) -> str:
         extracted = tar.extractfile(member)
         assert extracted is not None
         return extracted.read().decode("utf-8")
+
+
+def _get_written_member(mock_container: MagicMock) -> tarfile.TarInfo:
+    """Return the ``TarInfo`` of the file streamed via put_archive.
+
+    Exposes the tar entry's ``uid`` / ``gid`` / ``mode`` so tests can assert
+    that :func:`write_file` carried the resolved ownership into the archive.
+    """
+    call = mock_container.put_archive.call_args
+    assert call is not None, "put_archive was not called"
+    data = call.args[1]
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r") as tar:
+        return tar.getmembers()[0]
 
 
 class TestWriteFileSandboxFullOverwrite:
@@ -908,3 +937,33 @@ class TestWriteFileOwnership:
         container.exec_run.return_value = (127, (b"", b"stat: not found"))
         uid, gid, mode = _owner_for_write(container, "/x/f", "/x")
         assert (uid, gid, mode) == (0, 0, 0o644)
+
+    @patch("code_sandbox_mcp.server._docker")
+    def test_write_carries_existing_owner_into_archive(
+        self, mock_docker: MagicMock
+    ) -> None:
+        """End-to-end: write_file streams the resolved owner into the tar.
+
+        Drives the full ``write_file_sandbox`` path through the realistic
+        ``_exec_run_for`` mock (which answers the ``stat`` probes) and asserts
+        the put_archive tar entry carries the existing file's uid/gid/mode —
+        guarding against a regression that would leave files owned by root.
+        """
+        mock_container = MagicMock()
+        mock_container.exec_run.side_effect = _exec_run_for(
+            b"line1\nline2\n", uid=1000, gid=1000, mode=0o600
+        )
+        mock_client = MagicMock()
+        mock_client.containers.get.return_value = mock_container
+        mock_docker.return_value = mock_client
+
+        write_file_sandbox(
+            "abc123abc123",
+            "f.py",
+            "appended\n",
+            dest_dir="/home/sandbox",
+            append=True,
+        )
+
+        member = _get_written_member(mock_container)
+        assert (member.uid, member.gid, member.mode) == (1000, 1000, 0o600)
