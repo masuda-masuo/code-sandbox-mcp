@@ -3394,6 +3394,14 @@ def clone_repo(
     safe_target = shlex.quote(clone_path)
     safe_repo = shlex.quote(repo)
 
+    # Configure gh as git credential helper so that ``git push`` works
+    # with the injected token without requiring interactive auth.
+    container.exec_run(
+        ["/bin/sh", "-c", "gh auth setup-git"],
+        stdout=True,
+        stderr=True,
+    )
+
     if branch:
         cmd = (
             f"gh repo clone {safe_repo} {safe_target}"
