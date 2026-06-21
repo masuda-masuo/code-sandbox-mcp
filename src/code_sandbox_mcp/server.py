@@ -374,6 +374,10 @@ def _clone_repo_via_network(
         ``inject_vcs_token=True``; when the clone fails without a token
         the raised error suggests doing so.
     """
+    # Not redundant with the callers: this fallback runs only when
+    # _SHIORI_REPOS_PATH is unset, and _clone_shiori_repo_to_container
+    # raises on that *before* it calls _validate_clone_repo.  So this is
+    # the only validation on the network-fallback path (PR #170 review).
     _validate_clone_repo(clone_repo)
     repo_name = clone_repo.split("/")[-1]
     clone_path = clone_dest.rstrip("/") + "/" + repo_name
@@ -388,7 +392,7 @@ def _clone_repo_via_network(
                 " inject_vcs_token=True so gh can authenticate)"
             )
         raise RuntimeError(
-            "gh repo clone failed (exit {}): {}{}".format(exit_code, detail, hint)
+            f"gh repo clone failed (exit {exit_code}): {detail}{hint}"
         )
     return "Cloned {} via network into {} in container {}".format(
         clone_repo, clone_path, container_id[:12]
@@ -685,14 +689,14 @@ def sandbox_initialize(
                     )
                 except Exception as e2:
                     logger.warning("Network clone fallback failed: %s", e2)
-                    clone_msg = " (clone_repo failed: {})".format(e2)
+                    clone_msg = f" (clone_repo failed: {e2})"
             else:
                 logger.warning("Shiori clone copy failed: %s", e)
-                clone_msg = " (clone_repo failed: {})".format(e)
+                clone_msg = f" (clone_repo failed: {e})"
         except Exception as e:
             # Clone failure is non-fatal: the container is still usable.
             logger.warning("Shiori clone copy failed: %s", e)
-            clone_msg = " (clone_repo failed: {})".format(e)
+            clone_msg = f" (clone_repo failed: {e})"
     elif clone_repo and pr is not None:
         logger.info(
             "Skipping clone_repo=%s (pr=%s handles its own clone)",
