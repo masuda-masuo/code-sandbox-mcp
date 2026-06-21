@@ -151,6 +151,11 @@ stop_test_environment = mcp.tool()(stop_test_environment)
 wait_for_condition = mcp.tool()(wait_for_condition)
 
 
+# ---------------------------------------------------------------------------
+# write_file_sandbox -- old_str helper functions
+# ---------------------------------------------------------------------------
+
+
 def _find_all_matches(text: str, pattern: str) -> list[tuple[int, int]]:
     """Find all non-overlapping occurrences of *pattern* in *text*.
 
@@ -296,6 +301,11 @@ def _build_near_miss_echo(existing: str, old_str: str, dest_path: str) -> str:
         "Tip: Use read_file_range first to confirm the exact content "
         "(including whitespace)."
     )
+
+
+# ---------------------------------------------------------------------------
+# write_file_sandbox
+# ---------------------------------------------------------------------------
 
 
 @mcp.tool()
@@ -470,6 +480,11 @@ def write_file_sandbox(
     return f"Written {len(content)} bytes to {dest_path}"
 
 
+# ---------------------------------------------------------------------------
+# copy_project
+# ---------------------------------------------------------------------------
+
+
 @mcp.tool()
 def copy_project(
     container_id: str,
@@ -588,9 +603,7 @@ def copy_file(
     return f"Copied {local_src_file} to {dest} in container {container_id[:12]}"
 
 
-# ---------------------------------------------------------------------------
-# run_container_and_exec
-# ---------------------------------------------------------------------------
+
 
 
 @mcp.tool()

@@ -62,7 +62,7 @@ logger: logging.Logger = logging.getLogger(__name__)
 _DEFAULT_IMAGE: str = "ghcr.io/masuda-masuo/code-sandbox-mcp/sandbox@sha256:a03d4c8efbf4e7dd43d49e9666b9dcd56bbcd9237d229c9e1953b563d560fb16"
 
 _TERMINAL: str | None = None
-_UPDATE_SPEC: str = str(Path(__file__).resolve().parent.parent.parent)
+_UPDATE_SPEC: str = str(Path(__file__).resolve().parent.parent.parent.parent)
 _UPDATE_LOG_DIR: Path | None = None
 _CURRENT_UPDATE_LOG_PATH: str | None = None
 _UPDATE_LOCK: threading.Lock = threading.Lock()
