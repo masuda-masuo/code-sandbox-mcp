@@ -122,6 +122,10 @@ class TestSandboxInitializeResources:
 
         sandbox_initialize(image=_IMG)
 
+        # These expected values mirror DEFAULT_SECURITY_PROFILE in
+        # container.py (mem_limit="512m", cpu_period=100000 → 0.5
+        # cores = 50000).  If the profile defaults change, update
+        # these assertions accordingly.
         kwargs = client.containers.run.call_args.kwargs
         assert kwargs["mem_limit"] == "512m"
         assert kwargs["memswap_limit"] == "512m"
