@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from code_sandbox_mcp.server import (
+from code_sandbox_mcp.tools.container import (
     _setup_pr_branch,
     run_container_and_exec,
     sandbox_initialize,
@@ -37,7 +37,7 @@ class TestSetupPrBranch:
             (0, (b"Installed\n", b"")),
         ])
 
-        with patch("code_sandbox_mcp.server.logger"):
+        with patch("code_sandbox_mcp.tools.container.logger"):
             result = _setup_pr_branch(
                 container, "abc123def456", "owner/repo", 136, "/tmp/repo",
             )
@@ -88,7 +88,7 @@ class TestSetupPrBranch:
             (1, (b"", b"install failed")),
         ])
 
-        with patch("code_sandbox_mcp.server.logger") as mock_logger:
+        with patch("code_sandbox_mcp.tools.container.logger") as mock_logger:
             result = _setup_pr_branch(
                 container, "abc123def456", "owner/repo", 136, "/tmp/repo",
             )
@@ -122,11 +122,11 @@ class TestSetupPrBranch:
 class TestSandboxInitializePrParam:
     """Tests for sandbox_initialize with pr parameter."""
 
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server._container_env")
-    @patch("code_sandbox_mcp.server._ensure_image")
-    @patch("code_sandbox_mcp.server.validate_image_ref")
-    @patch("code_sandbox_mcp.server._setup_pr_branch")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container._container_env")
+    @patch("code_sandbox_mcp.tools.container._ensure_image")
+    @patch("code_sandbox_mcp.tools.container.validate_image_ref")
+    @patch("code_sandbox_mcp.tools.container._setup_pr_branch")
     def test_pr_calls_setup(
         self,
         mock_setup: MagicMock,
@@ -160,9 +160,9 @@ class TestSandboxInitializePrParam:
         run_kwargs = mock_client.containers.run.call_args[1]
         assert run_kwargs.get("environment", {}).get("GITHUB_TOKEN") == "fake-token"
 
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server._ensure_image")
-    @patch("code_sandbox_mcp.server.validate_image_ref")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container._ensure_image")
+    @patch("code_sandbox_mcp.tools.container.validate_image_ref")
     def test_pr_without_repo_returns_warning(
         self,
         mock_validate: MagicMock,
@@ -184,10 +184,10 @@ class TestSandboxInitializePrParam:
         assert "pr setup failed" in result
         assert "repo is required" in result
 
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server._ensure_image")
-    @patch("code_sandbox_mcp.server.validate_image_ref")
-    @patch("code_sandbox_mcp.server._setup_pr_branch")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container._ensure_image")
+    @patch("code_sandbox_mcp.tools.container.validate_image_ref")
+    @patch("code_sandbox_mcp.tools.container._setup_pr_branch")
     def test_pr_setup_failure_non_fatal(
         self,
         mock_setup: MagicMock,
@@ -211,9 +211,9 @@ class TestSandboxInitializePrParam:
         assert result.startswith("abc123def456")
         assert "pr setup failed" in result
 
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server._ensure_image")
-    @patch("code_sandbox_mcp.server.validate_image_ref")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container._ensure_image")
+    @patch("code_sandbox_mcp.tools.container.validate_image_ref")
     def test_without_pr_works_normally(
         self,
         mock_validate: MagicMock,
@@ -236,9 +236,9 @@ class TestSandboxInitializePrParam:
 class TestRunContainerAndExecPrParam:
     """Tests for run_container_and_exec with pr parameter."""
 
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server.validate_image_ref")
-    @patch("code_sandbox_mcp.server._setup_pr_branch")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container.validate_image_ref")
+    @patch("code_sandbox_mcp.tools.container._setup_pr_branch")
     def test_pr_calls_setup(
         self,
         mock_setup: MagicMock,
@@ -264,8 +264,8 @@ class TestRunContainerAndExecPrParam:
             mock_container, "abc123def456", "owner/repo", 136, "/tmp/repo", "[dev]",
         )
 
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server.validate_image_ref")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container.validate_image_ref")
     def test_pr_without_repo_returns_warning(
         self,
         mock_validate: MagicMock,
@@ -287,9 +287,9 @@ class TestRunContainerAndExecPrParam:
         assert result["status"] == "ok"
         assert result["pr_warning"] == "repo is required when pr is specified"
 
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server.validate_image_ref")
-    @patch("code_sandbox_mcp.server._setup_pr_branch")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container.validate_image_ref")
+    @patch("code_sandbox_mcp.tools.container._setup_pr_branch")
     def test_pr_error_reported(
         self,
         mock_setup: MagicMock,
@@ -327,7 +327,7 @@ class TestPipExtrasParam:
             (0, (b"Installed\n", b"")),
         ])
 
-        with patch("code_sandbox_mcp.server.logger"):
+        with patch("code_sandbox_mcp.tools.container.logger"):
             result = _setup_pr_branch(
                 container, "abc123def456", "owner/repo", 136, "/tmp/repo",
                 pip_extras="[testing]",
@@ -349,7 +349,7 @@ class TestPipExtrasParam:
             (0, (b"Switched\n", b"")),
         ])
 
-        with patch("code_sandbox_mcp.server.logger"):
+        with patch("code_sandbox_mcp.tools.container.logger"):
             result = _setup_pr_branch(
                 container, "abc123def456", "owner/repo", 136, "/tmp/repo",
                 pip_extras=None,
@@ -363,12 +363,12 @@ class TestPipExtrasParam:
 class TestCloneRepoPrInteraction:
     """Tests for clone_repo + pr interaction."""
 
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server._container_env")
-    @patch("code_sandbox_mcp.server._ensure_image")
-    @patch("code_sandbox_mcp.server.validate_image_ref")
-    @patch("code_sandbox_mcp.server._setup_pr_branch")
-    @patch("code_sandbox_mcp.server._clone_shiori_repo_to_container")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container._container_env")
+    @patch("code_sandbox_mcp.tools.container._ensure_image")
+    @patch("code_sandbox_mcp.tools.container.validate_image_ref")
+    @patch("code_sandbox_mcp.tools.container._setup_pr_branch")
+    @patch("code_sandbox_mcp.tools.container._clone_shiori_repo_to_container")
     def test_clone_repo_skipped_when_pr_set(
         self,
         mock_clone_shiori: MagicMock,
@@ -398,13 +398,13 @@ class TestCloneRepoPrInteraction:
         # _setup_pr_branch SHOULD be called
         mock_setup.assert_called_once()
 
-    @patch("code_sandbox_mcp.server._shiori_preclone_exists", return_value=True)
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server._container_env")
-    @patch("code_sandbox_mcp.server._ensure_image")
-    @patch("code_sandbox_mcp.server.validate_image_ref")
-    @patch("code_sandbox_mcp.server._setup_pr_branch")
-    @patch("code_sandbox_mcp.server._clone_shiori_repo_to_container")
+    @patch("code_sandbox_mcp.tools.container._shiori_preclone_exists", return_value=True)
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container._container_env")
+    @patch("code_sandbox_mcp.tools.container._ensure_image")
+    @patch("code_sandbox_mcp.tools.container.validate_image_ref")
+    @patch("code_sandbox_mcp.tools.container._setup_pr_branch")
+    @patch("code_sandbox_mcp.tools.container._clone_shiori_repo_to_container")
     def test_clone_repo_called_when_pr_not_set(
         self,
         mock_clone_shiori: MagicMock,

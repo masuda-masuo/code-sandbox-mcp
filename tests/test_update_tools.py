@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from code_sandbox_mcp.server import (
+from code_sandbox_mcp.tools.container import (
     _CURRENT_UPDATE_LOG_PATH,
     _UPDATE_SPEC,
     sandbox_update_check,
@@ -14,7 +14,7 @@ from code_sandbox_mcp.server import (
 @pytest.fixture(autouse=True)
 def _reset_update_state():
     """Reset global update state before and after each test."""
-    import code_sandbox_mcp.server as srv
+    import code_sandbox_mcp.tools.container as srv
     with srv._UPDATE_LOCK:
         was = srv._CURRENT_UPDATE_LOG_PATH
         srv._CURRENT_UPDATE_LOG_PATH = None
@@ -32,7 +32,7 @@ class TestSandboxUpdateStart:
         assert "Log:" in result
 
     def test_concurrent_update_returns_error(self) -> None:
-        import code_sandbox_mcp.server as srv
+        import code_sandbox_mcp.tools.container as srv
         with srv._UPDATE_LOCK:
             srv._CURRENT_UPDATE_LOG_PATH = "/tmp/update.log"
         result = sandbox_update_start()
@@ -45,7 +45,7 @@ class TestSandboxUpdateStart:
 
 @pytest.fixture
 def srv_module():
-    import code_sandbox_mcp.server as srv
+    import code_sandbox_mcp.tools.container as srv
     return srv
 
 

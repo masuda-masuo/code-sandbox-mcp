@@ -22,11 +22,13 @@ from code_sandbox_mcp.output_control import (
     truncate_by_tokens,
 )
 from code_sandbox_mcp.journal import record_exec
-from code_sandbox_mcp.server import (
+from code_sandbox_mcp.tools.container import (
     rerun_failed,
+    sandbox_exec_diff,
+)
+from code_sandbox_mcp.server import (
     sandbox_cache_invalidate,
     sandbox_cache_stats,
-    sandbox_exec_diff,
 )
 
 
@@ -266,8 +268,8 @@ class TestRerunFailed:
     def _decode(self, result: str) -> dict:
         return json.loads(result)
 
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server.read_journal")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container.read_journal")
     def test_no_failed_commands(
         self,
         mock_read_journal: MagicMock,
@@ -284,8 +286,8 @@ class TestRerunFailed:
         assert result["status"] == "ok"
         assert "No failed commands" in result["message"]
 
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server.read_journal")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container.read_journal")
     def test_run_id_not_found(
         self,
         mock_read_journal: MagicMock,
@@ -300,8 +302,8 @@ class TestRerunFailed:
         assert result["status"] == "error"
         assert "not found" in result["error"]
 
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server.read_journal")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container.read_journal")
     def test_rerun_with_failed_commands(
         self,
         mock_read_journal: MagicMock,
@@ -363,8 +365,8 @@ class TestSandboxExecDiff:
     def _decode(self, result: str) -> dict:
         return json.loads(result)
 
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server.get_cached_result")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container.get_cached_result")
     def test_first_run_no_diff(
         self,
         mock_get_cache: MagicMock,
@@ -385,8 +387,8 @@ class TestSandboxExecDiff:
         assert result["status"] == "ok"
         assert result["has_diff"] is False
 
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server.get_cached_result")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container.get_cached_result")
     def test_second_run_with_diff(
         self,
         mock_get_cache: MagicMock,
@@ -413,8 +415,8 @@ class TestSandboxExecDiff:
 
 
 
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server.get_cached_result")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container.get_cached_result")
     def test_exec_diff_uses_separate_cache_key(
         self,
         mock_get_cache: MagicMock,
@@ -426,7 +428,7 @@ class TestSandboxExecDiff:
         mock_client = MagicMock()
         mock_client.containers.get.return_value = mock_container
         mock_docker.return_value = mock_client
-        with patch("code_sandbox_mcp.server.set_cached_result") as mock_set:
+        with patch("code_sandbox_mcp.tools.container.set_cached_result") as mock_set:
             sandbox_exec_diff(
                 container_id="abc123",
                 commands=["echo test"],
@@ -441,9 +443,9 @@ class TestRerunFailedGetCachedResult:
     def _decode(self, result: str) -> dict:
         return json.loads(result)
 
-    @patch("code_sandbox_mcp.server._docker")
-    @patch("code_sandbox_mcp.server.read_journal")
-    @patch("code_sandbox_mcp.server.get_cached_result")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container.read_journal")
+    @patch("code_sandbox_mcp.tools.container.get_cached_result")
     def test_rerun_with_cached_original_output(
         self,
         mock_get_cache: MagicMock,
