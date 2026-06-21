@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 from docker.errors import APIError, NotFound
 
-from code_sandbox_mcp.tools.common import RECOVERY_DOCKER_TIMEOUT, _docker
+from code_sandbox_mcp.tools.common import RECOVERY_DOCKER_TIMEOUT, _docker, _recovery_timeout_from_env
 from code_sandbox_mcp.tools.container import sandbox_initialize, sandbox_stop
 from code_sandbox_mcp.tools.exec import sandbox_exec_check
 
@@ -165,3 +165,25 @@ class TestExecCheckTimeout:
 
         mock_docker.assert_called_once_with(timeout=RECOVERY_DOCKER_TIMEOUT)
         assert result == "running"
+
+
+class TestRecoveryTimeoutConfigurable:
+    """RECOVERY_DOCKER_TIMEOUT honours the env override (Issue #181 follow-up).
+
+    The merged #199 hard-coded 15s.  Operators on slow hosts may need to
+    tune it, so it is now read from ``CODE_SANDBOX_RECOVERY_DOCKER_TIMEOUT``
+    with a safe fallback.  See docs/issue-181-followup.md.
+    """
+
+    def test_default_when_unset(self, monkeypatch) -> None:
+        monkeypatch.delenv("CODE_SANDBOX_RECOVERY_DOCKER_TIMEOUT", raising=False)
+        assert _recovery_timeout_from_env() == 15.0
+
+    def test_env_override(self, monkeypatch) -> None:
+        monkeypatch.setenv("CODE_SANDBOX_RECOVERY_DOCKER_TIMEOUT", "3.5")
+        assert _recovery_timeout_from_env() == 3.5
+
+    def test_invalid_or_nonpositive_falls_back(self, monkeypatch) -> None:
+        for bad in ("not-a-number", "0", "-5"):
+            monkeypatch.setenv("CODE_SANDBOX_RECOVERY_DOCKER_TIMEOUT", bad)
+            assert _recovery_timeout_from_env() == 15.0
