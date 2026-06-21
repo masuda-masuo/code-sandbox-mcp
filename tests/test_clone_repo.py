@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from code_sandbox_mcp.server import (
+    _clone_repo_via_network,
     _clone_shiori_repo_to_container,
     _validate_clone_repo,
     run_container_and_exec,
@@ -337,6 +338,46 @@ class TestSandboxInitializeCloneRepo:
             mock_container, "abc123def456", "owner/repo", "/tmp/proj",
         )
 
+    @patch("code_sandbox_mcp.server._SHIORI_REPOS_PATH", None)
+    @patch("code_sandbox_mcp.server._clone_repo_via_network")
+    @patch("code_sandbox_mcp.server._clone_shiori_repo_to_container")
+    @patch("code_sandbox_mcp.server._docker")
+    @patch("code_sandbox_mcp.server._ensure_image")
+    @patch("code_sandbox_mcp.server.validate_image_ref")
+    def test_network_fallback_when_shiori_not_configured(
+        self,
+        mock_validate: MagicMock,
+        mock_ensure_image: MagicMock,
+        mock_docker: MagicMock,
+        mock_shiori_clone: MagicMock,
+        mock_net_clone: MagicMock,
+    ) -> None:
+        # When Shiori is NOT configured and the Shiori copy raises
+        # ValueError, sandbox_initialize should use the network fallback
+        # too (mirrors the run_container_and_exec path, Issue #146).
+        mock_container = MagicMock()
+        mock_container.id = "abc123def456"
+        mock_client = MagicMock()
+        mock_client.containers.run.return_value = mock_container
+        mock_docker.return_value = mock_client
+        mock_shiori_clone.side_effect = ValueError(
+            "Shiori repos path is not configured"
+        )
+        mock_net_clone.return_value = (
+            "Cloned owner/repo via network into /tmp/repo/repo"
+            " in container abc123def456"
+        )
+
+        result = sandbox_initialize(
+            image="python@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            clone_repo="owner/repo",
+        )
+
+        assert result.startswith("abc123def456")
+        assert "clone_repo failed" not in result
+        assert "via network" in result
+        mock_net_clone.assert_called_once()
+
 
 class TestRunContainerAndExecCloneRepo:
     """Tests for run_container_and_exec with clone_repo."""
@@ -373,12 +414,15 @@ class TestRunContainerAndExecCloneRepo:
     @patch("code_sandbox_mcp.server._clone_shiori_repo_to_container")
     @patch("code_sandbox_mcp.server._docker")
     @patch("code_sandbox_mcp.server.validate_image_ref")
+    @patch("code_sandbox_mcp.server._SHIORI_REPOS_PATH", "/some/repos")
     def test_clone_error_reported_in_result(
         self,
         mock_validate: MagicMock,
         mock_docker: MagicMock,
         mock_clone: MagicMock,
     ) -> None:
+        # When Shiori IS configured but the clone fails with ValueError,
+        # the error should be reported as clone_warning (Issue #84).
         mock_container = MagicMock()
         mock_container.id = "abc123def456"
         mock_container.exec_run.return_value = (0, (b"test output", b""))
@@ -395,6 +439,39 @@ class TestRunContainerAndExecCloneRepo:
 
         assert result["status"] == "ok"
         assert result["clone_warning"] == "path not found"
+
+    @patch("code_sandbox_mcp.server._SHIORI_REPOS_PATH", None)
+    @patch("code_sandbox_mcp.server._clone_repo_via_network")
+    @patch("code_sandbox_mcp.server._clone_shiori_repo_to_container")
+    @patch("code_sandbox_mcp.server._docker")
+    @patch("code_sandbox_mcp.server.validate_image_ref")
+    def test_network_fallback_when_shiori_not_configured(
+        self,
+        mock_validate: MagicMock,
+        mock_docker: MagicMock,
+        mock_shiori_clone: MagicMock,
+        mock_net_clone: MagicMock,
+    ) -> None:
+        # When Shiori is NOT configured and _clone_shiori_repo_to_container
+        # raises ValueError, the network fallback should be used (Issue #146).
+        mock_container = MagicMock()
+        mock_container.id = "abc123def456"
+        mock_container.exec_run.return_value = (0, (b"test output", b""))
+        mock_client = MagicMock()
+        mock_client.containers.run.return_value = mock_container
+        mock_docker.return_value = mock_client
+        mock_shiori_clone.side_effect = ValueError("Shiori repos path is not configured")
+        mock_net_clone.return_value = "Cloned owner/repo via network"
+
+        result = json.loads(run_container_and_exec(
+            image="python@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            commands=["echo hello"],
+            clone_repo="owner/repo",
+        ))
+
+        assert result["status"] == "ok"
+        assert "clone_warning" not in result
+        mock_net_clone.assert_called_once()
 
     @patch("code_sandbox_mcp.server._clone_shiori_repo_to_container")
     @patch("code_sandbox_mcp.server._docker")
@@ -553,3 +630,38 @@ class TestShioriReposPathArg:
             parser = _build_arg_parser()
             args = parser.parse_args([])
             assert args.shiori_repos_path == "/custom/repos"
+
+
+class TestCloneRepoViaNetwork:
+    """Tests for _clone_repo_via_network (Issue #146, PR #170 review)."""
+
+    def _container(self, exit_code: int, output: bytes) -> MagicMock:
+        c = MagicMock()
+        c.id = "abc123def456"
+        c.exec_run.return_value = (exit_code, output)
+        return c
+
+    def test_success_returns_message(self) -> None:
+        c = self._container(0, b"")
+        msg = _clone_repo_via_network(c, "abc123def456", "owner/repo", "/tmp/repo")
+        assert "owner/repo" in msg
+        assert "/tmp/repo/repo" in msg
+
+    def test_failure_without_token_hints_inject_vcs_token(self) -> None:
+        # Private repos fail without a token; the error must guide the user
+        # to opt in with inject_vcs_token=True (token is not auto-injected).
+        c = self._container(1, b"gh: Could not resolve to a Repository")
+        with pytest.raises(RuntimeError) as exc:
+            _clone_repo_via_network(c, "abc123def456", "owner/private", "/tmp/repo")
+        assert "inject_vcs_token=True" in str(exc.value)
+
+    def test_failure_with_token_omits_hint(self) -> None:
+        # When the token was already injected the hint would be misleading,
+        # so it must be suppressed.
+        c = self._container(1, b"some other gh error")
+        with pytest.raises(RuntimeError) as exc:
+            _clone_repo_via_network(
+                c, "abc123def456", "owner/private", "/tmp/repo",
+                inject_vcs_token=True,
+            )
+        assert "inject_vcs_token=True" not in str(exc.value)
