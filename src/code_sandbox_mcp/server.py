@@ -340,6 +340,42 @@ def _clone_shiori_repo_to_container(
     )
 
 
+def _try_clone_into_container(
+    container: Any,
+    container_id: str,
+    clone_repo: str,
+    clone_dest: str,
+) -> tuple[str | None, str | None]:
+    """Attempt to copy a Shiori pre-cloned repo into the container.
+
+    Wraps :func:`_clone_shiori_repo_to_container` with the non-fatal
+    error handling shared by :func:`sandbox_initialize` and
+    :func:`run_container_and_exec`: clone failure leaves the container
+    usable, so the exception is logged and surfaced rather than raised.
+
+    Args:
+        container: Docker container object.
+        container_id: 12-char container ID prefix.
+        clone_repo: ``owner/name`` repository identifier.
+        clone_dest: Destination directory inside the container.
+
+    Returns:
+        ``(clone_msg, clone_error)`` where exactly one is non-None:
+        on success ``clone_msg`` is the message from the underlying
+        clone and ``clone_error`` is ``None``; on failure ``clone_msg``
+        is ``None`` and ``clone_error`` is the stringified exception.
+    """
+    try:
+        clone_msg = _clone_shiori_repo_to_container(
+            container, container_id, clone_repo, clone_dest,
+        )
+        return clone_msg, None
+    except Exception as e:
+        # Clone failure is non-fatal: the container is still usable.
+        logger.warning("Shiori clone copy failed: %s", e)
+        return None, str(e)
+
+
 # ---------------------------------------------------------------------------
 # sandbox_initialize
 # ---------------------------------------------------------------------------
@@ -435,14 +471,13 @@ def sandbox_initialize(
     # -- Shiori clone copy (Issue #84) --
     clone_msg = ""
     if clone_repo:
-        try:
-            clone_msg = " " + _clone_shiori_repo_to_container(
-                container, cid, clone_repo, clone_dest,
-            )
-        except Exception as e:
-            # Clone failure is non-fatal: the container is still usable.
-            logger.warning("Shiori clone copy failed: %s", e)
-            clone_msg = f" (clone_repo failed: {e})"
+        msg, err = _try_clone_into_container(
+            container, cid, clone_repo, clone_dest,
+        )
+        if err is not None:
+            clone_msg = f" (clone_repo failed: {err})"
+        else:
+            clone_msg = " " + msg
 
     return cid + clone_msg
 
@@ -1469,13 +1504,9 @@ def run_container_and_exec(
     # --- Shiori clone copy (Issue #84) ---
     clone_error: str | None = None
     if clone_repo:
-        try:
-            _clone_shiori_repo_to_container(
-                container, container_id, clone_repo, clone_dest,
-            )
-        except Exception as e:
-            logger.warning("Shiori clone copy failed: %s", e)
-            clone_error = str(e)
+        _, clone_error = _try_clone_into_container(
+            container, container_id, clone_repo, clone_dest,
+        )
 
     # --- Execute commands ---
     try:
