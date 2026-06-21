@@ -85,47 +85,9 @@ from .tools.vcs import (
     submit,
 )
 
-#: Default Docker image used when no image is specified.
-#:
-#: Uses the pre-built sandbox image (``docker/Dockerfile.sandbox``) which
-#: includes git/gh/uv/ripgrep/ruff/pyright/semgrep and runs as the
-#: dedicated ``sandbox`` user (non-root).
-#:
-#: **このフィールドは直接編集しないこと。**
-#: ``docker/Dockerfile.sandbox`` を変更すると CI
-#: (``.github/workflows/build-sandbox-image.yml``) が自動で
-#: GHCR へ push し、新ダイジェストを書き込んだ PR を作成する。
-#:
-#: ローカルで試す場合::
-#:
-#:   docker build -f docker/Dockerfile.sandbox -t code-sandbox-mcp/sandbox:latest .
-#:   docker images --digests code-sandbox-mcp/sandbox  # sha256 を取得
-#:   # 取得した sha256 を下の文字列に貼り付けてテスト
-#:
-#: Refs: Issue #56, docs/design.md §2.1, §11, §12
-
-#: Stdio proxy - shared with launcher via this module variable.
-#: Shiori repos root path on the host for cp-by-pass git clone (Issue #84).
-#: Set via ``--shiori-repos-path`` CLI arg or ``SHIORI_REPOS_PATH`` env var.
-#: When set, ``sandbox_initialize`` and ``run_container_and_exec`` can use
-#: ``clone_repo`` to copy a pre-cloned repository from this path into the
-#: container, bypassing a network ``git clone``.
-#: Compiled pattern for validating clone_repo ``owner/name`` format.
-#: Sensitive file/directory basenames to exclude from tar archive.
-
 logger: logging.Logger = logging.getLogger(__name__)
 
 mcp = FastMCP("code-sandbox-mcp")
-
-
-# ---------------------------------------------------------------------------
-# Shiori clone helper (Issue #84)
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# sandbox_initialize
-# ---------------------------------------------------------------------------
 
 
 sandbox_exec = mcp.tool()(sandbox_exec)
