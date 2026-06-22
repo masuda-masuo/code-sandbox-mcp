@@ -418,6 +418,41 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _start_github_app_token_refresh(interval_seconds: int = 120) -> None:
+    """Mint a GitHub App token now and refresh it periodically in a daemon thread.
+
+    No-op when no GitHub App is configured (the existing ``GITHUB_TOKEN`` is
+    preserved), so existing deployments are unaffected (issue #203, PR-A).
+    """
+    import threading
+
+    from code_sandbox_mcp.github_auth import setup_github_app_token
+
+    try:
+        provider = setup_github_app_token()
+    except Exception:  # noqa: BLE001 - never block startup on token setup
+        logger.exception("GitHub App token setup failed; continuing without it")
+        return
+    if provider is None:
+        return
+
+    def _refresh_loop() -> None:
+        while True:
+            time.sleep(interval_seconds)
+            try:
+                token = provider.get_token()
+                if token:
+                    os.environ["GITHUB_TOKEN"] = token
+            except Exception:  # noqa: BLE001 - keep the daemon alive
+                logger.exception("GitHub App token refresh failed")
+
+    thread = threading.Thread(
+        target=_refresh_loop, name="github-app-token-refresh", daemon=True
+    )
+    thread.start()
+    logger.info("started GitHub App token refresh thread (every %ss)", interval_seconds)
+
+
 def main() -> None:
     """Parse CLI arguments and run the MCP server.
 
@@ -458,6 +493,14 @@ def main() -> None:
 
         msg = start_dashboard(port=args.dashboard_port)
         logger.info(msg)
+
+    # Self-manage a GitHub App installation token so that VCS auth keeps
+    # working when running as a long-lived streamable-http daemon outside
+    # mcp-launcher's GITHUB_TOKEN injection (issue #203, PR-A). When no
+    # GitHub App is configured this is a no-op and the existing GITHUB_TOKEN
+    # (launcher-injected or manual) is left untouched -> zero impact on
+    # existing deployments.
+    _start_github_app_token_refresh()
 
     transport = args.transport
     if transport == "stdio":
