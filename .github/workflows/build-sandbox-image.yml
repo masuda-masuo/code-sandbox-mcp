@@ -37,7 +37,7 @@ jobs:
           push: true
           tags: ghcr.io/${{ github.repository }}/sandbox:latest
 
-      - name: Update _DEFAULT_IMAGE in server.py and open PR
+      - name: Update _DEFAULT_IMAGE in container.py and open PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DIGEST: ${{ steps.build.outputs.digest }}
