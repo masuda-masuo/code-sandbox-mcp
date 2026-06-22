@@ -67,13 +67,21 @@ class FuncInfo:
 
 
 @dataclass
+class Risks:
+    """Risk findings for an extraction: ``__file__``, shared deps, missing docstrings."""
+
+    dunder_file_lines: list[int]
+    shared_deps: list[tuple[str, str, str]]
+    missing_docstrings: list[str]
+
+
+@dataclass
 class Model:
     """The whole-package symbol/reference model built in a single AST pass."""
 
     top_pkg: str
     src_root: Path
     defs: dict[tuple[str, str], Definition]
-    by_name: dict[str, list[Definition]]
     funcs: dict[tuple[str, str], FuncInfo]
     import_maps: dict[Path, dict[str, tuple[str, str]]]
     referrers: dict[tuple[str, str], set[str]] = field(default_factory=dict)
@@ -119,10 +127,16 @@ def _scan_function(node: ast.AST) -> tuple[set[str], list[int]]:
 def build_model(src_root: Path) -> Model:
     """Walk every ``*.py`` under *src_root* and build the reference model."""
     pkgs = sorted(p.parent.name for p in src_root.glob("*/__init__.py"))
+    if len(pkgs) > 1:
+        pkgs_str = ', '.join(pkgs)
+        print(
+            f"note: multiple packages found under {src_root}: "
+            f"{pkgs_str}; using {pkgs[0]!r}",
+            file=sys.stderr,
+        )
     top_pkg = pkgs[0] if pkgs else ""
 
     defs: dict[tuple[str, str], Definition] = {}
-    by_name: dict[str, list[Definition]] = {}
     funcs: dict[tuple[str, str], FuncInfo] = {}
     import_maps: dict[Path, dict[str, tuple[str, str]]] = {}
 
@@ -149,7 +163,6 @@ def build_model(src_root: Path) -> Model:
                 defs[(module, n.name)] = Definition(
                     n.name, module, path, n.lineno, "func", has_doc
                 )
-                by_name.setdefault(n.name, []).append(defs[(module, n.name)])
                 calls, dunder = _scan_function(n)
                 funcs[(module, n.name)] = FuncInfo(
                     n.name, module, path, n.lineno, has_doc, calls, dunder
@@ -159,9 +172,8 @@ def build_model(src_root: Path) -> Model:
                 defs[(module, n.name)] = Definition(
                     n.name, module, path, n.lineno, "class", has_doc
                 )
-                by_name.setdefault(n.name, []).append(defs[(module, n.name)])
 
-    model = Model(top_pkg, src_root, defs, by_name, funcs, import_maps)
+    model = Model(top_pkg, src_root, defs, funcs, import_maps)
     _build_refs(model)
     return model
 
@@ -211,6 +223,25 @@ def annotate(model: Model, src_module: str, dep_module: str, dep_name: str) -> s
             return "shared - careful (also used by: " + ", ".join(sorted(others)) + ")"
         return "move together"
     return f"import as-is ({dep_module})"
+
+
+
+def _collect_risks(
+    model: Model, fi: FuncInfo, name: str, deps: list[tuple[str, str, str]]
+) -> Risks:
+    """Collect risk findings for a function and its dependencies."""
+    shared_deps = [(m, n, a) for m, n, a in deps if a.startswith("shared")]
+    missing = [name] if not fi.has_docstring else []
+    for m, n, a in deps:
+        if a == "move together":
+            d = model.defs.get((m, n))
+            if d is not None and not d.has_docstring:
+                missing.append(n)
+    return Risks(
+        dunder_file_lines=fi.dunder_file_lines,
+        shared_deps=shared_deps,
+        missing_docstrings=missing,
+    )
 
 
 def deps_of(model: Model, mod: str, name: str) -> list[tuple[str, str, str]]:
@@ -302,10 +333,10 @@ def render_extract_check(model: Model, mod: str, name: str) -> list[str]:
     """Render the extraction plan and risk findings for a function."""
     fi = model.funcs[(mod, name)]
     deps = deps_of(model, mod, name)
+    risks = _collect_risks(model, fi, name, deps)
 
     move = [(m, n) for m, n, a in deps if a == "move together"]
     imp = [(m, n) for m, n, a in deps if a.startswith("import as-is")]
-    shared = [(m, n, a) for m, n, a in deps if a.startswith("shared")]
 
     lines = [f"extract-check: {name}  ({_loc(model, mod, name)})", "", "dependencies to carry:"]
     lines.append("  move together:  " + (", ".join(n for _, n in move) or "(none)"))
@@ -313,24 +344,21 @@ def render_extract_check(model: Model, mod: str, name: str) -> list[str]:
         "  import as-is:   " + (", ".join(f"{n} ({m})" for m, n in imp) or "(none)")
     )
 
-    risks: list[str] = []
-    if fi.dunder_file_lines:
-        locs = ", ".join(f"L{n}" for n in fi.dunder_file_lines)
-        risks.append(
+    risk_lines: list[str] = []
+    if risks.dunder_file_lines:
+        locs = ", ".join(f"L{n}" for n in risks.dunder_file_lines)
+        risk_lines.append(
             f"WARN __file__ referenced ({locs}) - path base changes on move; recheck Path depth"
         )
-    for dmod, dname, ann in shared:
-        risks.append(f"WARN shared dep: {dname}() is referenced elsewhere - {ann}")
-    if not fi.has_docstring:
-        risks.append(f"WARN missing docstring: {name}()")
-    for dmod, dname in move:
-        d = model.defs.get((dmod, dname))
-        if d is not None and not d.has_docstring:
-            risks.append(f"WARN missing docstring (move target): {dname}()")
+    for dmod, dname, ann in risks.shared_deps:
+        risk_lines.append(f"WARN shared dep: {dname}() is referenced elsewhere - {ann}")
+    for fn in risks.missing_docstrings:
+        label = "missing docstring" if fn == name else "missing docstring (move target)"
+        risk_lines.append(f"WARN {label}: {fn}()")
 
     lines.append("")
     lines.append("risks:")
-    lines.extend("  " + r for r in (risks or ["(none)"]))
+    lines.extend("  " + r for r in (risk_lines or ["(none)"]))
     return lines
 
 
@@ -354,14 +382,8 @@ def extract_check_json(model: Model, mod: str, name: str) -> dict:
     """Machine-readable extraction plan + risks for a function."""
     fi = model.funcs[(mod, name)]
     deps = deps_of(model, mod, name)
+    risks = _collect_risks(model, fi, name, deps)
     move = [n for m, n, a in deps if a == "move together"]
-    shared = [n for m, n, a in deps if a.startswith("shared")]
-    missing_doc = [name] if not fi.has_docstring else []
-    for m, n, a in deps:
-        if a == "move together":
-            d = model.defs.get((m, n))
-            if d is not None and not d.has_docstring:
-                missing_doc.append(n)
     return {
         "function": name,
         "module": mod,
@@ -370,9 +392,9 @@ def extract_check_json(model: Model, mod: str, name: str) -> dict:
             {"module": m, "name": n} for m, n, a in deps if a.startswith("import as-is")
         ],
         "risks": {
-            "dunder_file_lines": fi.dunder_file_lines,
-            "shared_dependencies": shared,
-            "missing_docstrings": missing_doc,
+            "dunder_file_lines": risks.dunder_file_lines,
+            "shared_dependencies": [n for _, n, _ in risks.shared_deps],
+            "missing_docstrings": risks.missing_docstrings,
         },
     }
 
