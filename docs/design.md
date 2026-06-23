@@ -246,22 +246,69 @@ else:
 
 > 位置づけ: edit/verify ループの**入口（課題取得）と出口（提出）**だけを足す。GitHub MCP を介さず payload をコンテキストに通さないことが唯一の狙い。
 
-**ツール（新規はこの2つだけ）**
-- **`issue_view`**（`gh issue view` / read）: issue 本文をコンテナ内ファイルへ落とし、LLM には**要約＋ハンドル**だけ返す（§3.1）。§2.2 read 扱い（ジャーナル記録・ネットワーク明示許可）。
-- **`submit`**（write / 境界越え）: `branch → commit → push →（任意）PR作成` を1コール。**内部で `verify` を必ず再実行**し、失敗なら push 拒否。§2.2 の dry_run＋トークン必須、§8 ジャーナルにプランと結果を記録。
+**ツール**
 
-**認証**: VCS トークンの注入は **opt-in** 化（Issue #57）。`sandbox_initialize` / `run_container_and_exec` の `inject_vcs_token=True` を指定したコンテナにのみ `GITHUB_TOKEN` / `GITHUB_TOKEN_SOURCE` / `GH_TOKEN` が注入される。既定は `False`（トークン無し）。これにより:
-- 最小権限の原則を遵守（VCS 不要のコンテナにトークンが渡らない）
-- 実行ログからのトークン漏洩リスク低減（`sanitize_output` 内の `mask_tokens` で `KEY=***` に自動マスク）
-- トークンのスコープに応じた細かい制御が可能（read 用途と write 用途で別コンテナを使い分け）
+- **`issue_view`**（read）: issue 本文をコンテナ内ファイルへ落とし、LLM には**要約＋ハンドル**だけ返す（§3.1）。§2.2 read 扱い（ジャーナル記録・ネットワーク明示許可）。
+- **`submit`**（write / 境界越え）: コミット済みの状態を push し、任意で PR を作成する唯一の出口。内部で `verify` を必ず再実行し、ゲート不合格なら push を拒否する。§2.2 の二段階トークン必須、§8 ジャーナルにプランと結果を記録。
 
-**payload 非通過フロー**:
+**認証（opt-in トークン注入）**
+
+VCS トークンは `inject_vcs_token=True` を指定したコンテナにのみ `GITHUB_TOKEN` / `GITHUB_TOKEN_SOURCE` / `GH_TOKEN` として注入される。既定はトークン無し。
+
+- 最小権限: VCS 不要のコンテナにトークンが渡らない。
+- 漏洩低減: 実行ログは `sanitize_output` の `mask_tokens` で `KEY=***` に自動マスクされる。
+- read 用途と write 用途で別コンテナに分けられる。
+
+**payload 非通過フロー**
+
 ```
 issue_view →(要約)→ search_in_container → read_file_range → write_file_sandbox(old_str) | transform_file → verify → submit
 ```
+
 issue 本文も差分もコンテナ内に留まり、LLM は run_id / ハンドル / 構造化サマリだけ運ぶ。
 
 **スコープ境界**: 触るのはコンテナ内クローンのみ（§5 維持）。issue 一覧管理・レビュー運用・projects は入れない。
+
+### 11.1 コミット/プッシュの3層モデル
+
+サンドボックス内の git 操作を3層に分ける。各ツールの docstring と挙動判断はこの節を唯一の真実源とする。
+
+| 層 | ツール | token | verify ゲート | 境界 |
+|---|---|---|---|---|
+| 保存 | `checkpoint` / `checkpoint_list` | 不要 | 無し | コンテナ内 |
+| 巻き戻し | `checkpoint_restore` | 不要 | 無し | コンテナ内 |
+| 出口 | `submit` | 必須 | 有り | GitHub への push |
+
+コンテナ内は使い捨て（§0）。保存・巻き戻し層は token もゲートも要らず、edit/verify ループ中のセーブポイントと巻き戻しに使う。ゲートの対象は境界を越える push だけ（§2.2）。
+
+**出口（`submit`）と transport**
+
+提出ツールは `submit` のみ。`submit` は2つの push transport を内部に持ち、外からは透過:
+
+- 既定: `git push`（credential helper 経由）。
+- フォールバック: GitHub Objects API（blob→tree→commit→ref）に `Authorization` ヘッダを直接載せて push。helper を介さないため、helper にトークンを渡せない環境でも成功する。
+
+`git push` が認証配管の都合で失敗したとき、`submit` は自動で API push に切り替える。transport の選択は LLM に露出しない。
+
+**transport 非依存の不変条件**
+
+- verify ゲートは transport によらず必ず通る。どちらの経路でもゲートは迂回できない。
+- force-push はオプトイン。フォールバック時も暗黙には force-push しない。
+
+**checkpoint の squash**
+
+`submit` は `squash_checkpoints=True` のとき、未 push の checkpoint コミットだけを1コミットに畳んでから push する。squash ベースは clone/branch 時に記録した分岐点 ref を使い、デフォルトブランチ名に依存せず push を常に fast-forward に保つ。API push 経路は HEAD ツリーを単一コミット化するため、checkpoint は元から残らない。
+
+**Rescue PR（gate 失敗時の保全）**
+
+原則: gate は landing を止めるが、preservation は止めない。verify が赤でも作業を GitHub へ退避する経路を、明示オプトインとして持つ。
+
+- `on_gate_fail="draft"` のときだけ有効。draft PR を強制し、保護ブランチを base にできない。
+- PR 本文と commit trailer に `[verify-failing]` と、どの層が赤かの構造化サマリ（file:line）を記録する。
+- ジャーナルに記録し、確認トークンの二段階フローを維持する（§2.2 / §8）。
+- verify を通過していない push を緑として扱うことはない。赤は赤と明示した提出だけを許可する。
+
+`gate_on_*` で「赤を緑として通す」設定は持たない。verify が赤のまま提出する正規の経路は Rescue PR だけとする。
 
 ---
 
