@@ -261,7 +261,7 @@ def checkpoint_list(
     safe_wd = shlex.quote(working_dir)
     cmd = (
         f"cd {safe_wd} &&"
-        f" git log --oneline --format='%h %aI %s' --not --remotes -{int(limit)}"
+        f" git log --oneline --format='%h %aI %s' HEAD --not --remotes -{int(limit)}"
     )
     ec, out = container.exec_run(
         ["/bin/sh", "-c", cmd],
@@ -707,7 +707,7 @@ Returns:
 
         # Check for unpushed checkpoints
         unpushed_ec, unpushed_out, _ = _run(
-            "git log --oneline --not --remotes 2>/dev/null"
+            "git log --oneline HEAD --not --remotes 2>/dev/null"
         )
         has_unpushed = unpushed_ec == 0 and unpushed_out.strip() != ""
 
