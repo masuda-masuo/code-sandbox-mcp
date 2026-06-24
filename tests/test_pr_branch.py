@@ -437,7 +437,6 @@ class TestCloneRepoPrInteraction:
     ):
         mock_container = MagicMock()
         mock_container.id = "abc123def456"
-        mock_container.exec_run.return_value = (0, (b"", b""))
         mock_client = MagicMock()
         mock_client.containers.run.return_value = mock_container
         mock_docker.return_value = mock_client
@@ -446,6 +445,7 @@ class TestCloneRepoPrInteraction:
         sandbox_initialize(
             image="python@sha256:0000000000000000000000000000000000000000000000000000000000000000",
             clone_repo="owner/repo",
+            pip_extras=None,
         )
 
         # _clone_shiori_repo_to_container SHOULD be called
