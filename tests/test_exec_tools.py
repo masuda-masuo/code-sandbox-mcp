@@ -451,3 +451,36 @@ class TestServerArgs:
         args = parser.parse_args([])
         assert args.host == "127.0.0.1"
         assert args.port == 8765
+
+
+class TestContainerEnvBroker:
+    """_container_env broker integration (Issue #232): COMMAND-first, static fallback."""
+
+    def test_minted_token_takes_precedence_over_static(self) -> None:
+        """A freshly minted broker token overrides the static GITHUB_TOKEN."""
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_static"}, clear=True):
+            with patch(
+                "code_sandbox_mcp.tools.container.token_broker.mint_token",
+                return_value="ghs_fresh",
+            ):
+                env = _container_env(inject_vcs_token=True)
+                assert env["GITHUB_TOKEN"] == "ghs_fresh"
+
+    def test_broker_failure_falls_back_to_static_token(self) -> None:
+        """When the broker yields nothing, the static GITHUB_TOKEN is used."""
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_static"}, clear=True):
+            with patch(
+                "code_sandbox_mcp.tools.container.token_broker.mint_token",
+                return_value=None,
+            ):
+                env = _container_env(inject_vcs_token=True)
+                assert env["GITHUB_TOKEN"] == "ghp_static"
+
+    def test_no_sources_is_noop(self) -> None:
+        """No broker and no static token yields an empty env."""
+        with patch.dict(os.environ, {}, clear=True):
+            with patch(
+                "code_sandbox_mcp.tools.container.token_broker.mint_token",
+                return_value=None,
+            ):
+                assert _container_env(inject_vcs_token=True) == {}

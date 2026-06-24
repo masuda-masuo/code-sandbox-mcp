@@ -20,6 +20,7 @@ from typing import Any, NamedTuple
 
 from docker.errors import APIError, NotFound
 
+from code_sandbox_mcp import token_broker
 from code_sandbox_mcp.journal import (
     read_journal,
     record_boundary_crossing,
@@ -85,10 +86,24 @@ def _container_env(inject_vcs_token: bool = False) -> dict[str, str]:
     Token injection is opt-in (``inject_vcs_token=True``) to avoid
     leaking credentials into containers that do not need VCS access
     (principle of least privilege, Issue #57).
+
+    When a keystore broker is configured (``GITHUB_TOKEN_COMMAND`` or
+    ``GITHUB_TOKEN_BROKER_SERVICE``) a fresh token is minted per call and
+    takes precedence over the static host ``GITHUB_TOKEN`` (Issue #232).
     """
     env: dict[str, str] = {}
     if inject_vcs_token:
+        # Prefer a freshly minted token from the keystore broker (Issue #232):
+        # GITHUB_TOKEN_COMMAND or the pinned mcp-token CLI mint a short-lived
+        # token per container start. Falls back to the static host env vars
+        # below when no broker is configured or the command fails.
+        minted = token_broker.mint_token()
+        if minted:
+            env["GITHUB_TOKEN"] = minted
+            logger.info("Injected freshly minted GITHUB_TOKEN into container environment")
         for key in ("GITHUB_TOKEN", "GITHUB_TOKEN_SOURCE", "GH_TOKEN"):
+            if key in env:
+                continue
             val = os.environ.get(key)
             if val:
                 env[key] = val
