@@ -1191,10 +1191,10 @@ def sandbox_create_pr(
     """[DEPRECATED] Push the current branch via GitHub API and create a PR.
 
     .. deprecated::
-       This tool is kept for backward compatibility.  Use
-       :func:`submit` instead -- it includes an automatic API push
-       transport fallback, so the same capability is available
-       without calling this tool directly.
+       This function is **no longer registered as an MCP tool** (see
+       issue #256).  It remains as an internal fallback for the
+       GitHub Objects API push path within :func:`submit`.  Use
+       :func:`submit` instead.
 
     Unlike :func:`submit`, this tool uses the GitHub Objects API
     (blob → tree → commit → ref) to push the branch, which works when

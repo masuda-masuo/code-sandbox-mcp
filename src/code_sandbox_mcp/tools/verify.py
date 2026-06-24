@@ -21,16 +21,13 @@ from code_sandbox_mcp.tools.common import _docker
 def apply_patch(container_id: str, file_path: str, diff_content: str) -> str:
     """Apply a unified diff to a file inside the sandbox container.
 
-    .. warning::
+    .. note::
 
-       **Deprecated for AI-authored edits.**  Hand-written unified diffs
-       almost always fail on ``@@`` header line counts or context-line
-       whitespace, and each failed retry costs a full round-trip — making
-       this *more* expensive than the alternatives, not less.  For AI
-       editing use :func:`write_file_sandbox` with ``old_str`` (the default
-       edit path) or :func:`transform_file` (imperative).  Reserve
-       ``apply_patch`` for **machine-generated** diffs (``git diff`` /
-       ``diff -u``), where the diff is byte-exact.
+       This function is **no longer registered as an MCP tool** (see
+       issue #256).  It remains available as an internal helper for
+       machine-generated diffs.  For AI-authored edits, use
+       :func:`write_file_sandbox` with ``old_str`` or
+       :func:`transform_file`.
 
     Reads the current file from the container, applies the unified diff,
     and writes the result back.
@@ -45,9 +42,9 @@ def apply_patch(container_id: str, file_path: str, diff_content: str) -> str:
 
     See also:
         :func:`write_file_sandbox` — full overwrite / line-range /
-        append / string-replace modes.
-        :func:`transform_file` — recommended imperative edit path; also the
-        actual implementation that ``apply_patch`` now delegates to.
+        append / string-replace modes (recommended for AI edits).
+        :func:`transform_file` — imperative edits (bulk / structural /
+        computed).
     """
     client = _docker()
     try:

@@ -142,7 +142,6 @@ Sends OS desktop notifications (Linux) or webhook notifications on boundary-cros
 | Tool | Description |
 |------|-------------|
 | `transform_file` | **Imperative edit path.** Edit a file by supplying Python `transform(text) -> str` that computes the new content (runs inside the container; returns a unified diff). Best for bulk / repetitive / structural / computed edits where `old_str` would need many calls and a diff would be huge. Single `code` string — no shell escaping. |
-| `apply_patch` | **Deprecated for AI-authored edits.** Apply a unified diff to a file. LLM-written diffs almost always fail on `@@` header counts / context whitespace, and each failed retry costs a full round-trip — making it *more* expensive, not less. For AI editing use `write_file_sandbox` with `old_str` (the default edit path) or `transform_file`. Reserve `apply_patch` for **machine-generated** diffs (`git diff` / `diff -u`). |
 | `read_file_range` | Read `limit` lines starting at `offset`. Returns JSON with pagination metadata. |
 | `lint_in_container` | Run linter on a file (`.py` → ruff/pylint, `.js/.ts/.jsx/.tsx` → eslint). |
 | `type_check_in_container` | Run type checker on a file (`.py` → pyright (mypy fallback), `.ts/.tsx` → tsc). |

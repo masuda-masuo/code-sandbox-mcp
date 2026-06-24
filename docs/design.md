@@ -145,7 +145,7 @@
 
 - **宣言的 = `write_file_sandbox`**（上記コア）: 新テキストが既知のとき。点編集の主役。
 - **命令的 = `transform_file`**: 新バイト列をコードで計算するとき（regex 一括 / 構造書換 / 計算的編集 / 機械生成 diff の `git apply`）。`code` は**単一トップレベル文字列**で受け内部 base64 化（multibyte/改行のエスケープ問題を構造的に回避）、**結果 diff を返す**ことで read-modify-write-verify を一体化（サイレント破壊の可視化）。
-- **`apply_patch` は deprecated**: かつて「主役」と位置づけたが誤り。LLM 手書き unified diff は失敗率が高く、失敗時の往復で**トークン経済が反転する**。「フルファイル送信比で1〜2桁削減」は baseline が誤りで、真の競合は `old_str`（そこに対しペイロード優位はほぼ無く、コンテキスト行ぶん出力が増えることすらある）。機械生成 diff の適用は `transform_file` の `git apply` 経路に委譲し、apply_patch は1リリースの間 deprecated な薄いラッパーとして残す（即削除はしない）。
+- **`apply_patch` は削除済み**: かつて「主役」と位置づけたが誤り。LLM 手書き unified diff は失敗率が高く、失敗時の往復で**トークン経済が反転する**。「フルファイル送信比で1〜2桁削減」は baseline が誤りで、真の競合は `old_str`（そこに対しペイロード優位はほぼ無く、コンテキスト行ぶん出力が増えることすらある）。`apply_patch` は `mcp.tool()` 登録を削除済み（#259）。機械生成 diff の適用は `transform_file` の `git apply` 経路を使用する。
 
 **二次（需要が出てから）**
 - `sd`（テキスト/設定/Markdown の正規表現置換）/ `ast-grep`(rewrite)（コード構造書換）。`transform_file` の内部実装に吸収可。§1改訂の通りコンテナ内 CLI なので可。
