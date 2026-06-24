@@ -251,7 +251,7 @@ def checkpoint_list(
     safe_wd = shlex.quote(working_dir)
     cmd = (
         f"cd {safe_wd} &&"
-        f" git log --oneline --format='%h %s %aI' -{int(limit)}"
+        f" git log --oneline --format='%h %aI %s' -{int(limit)}"
     )
     ec, out = container.exec_run(
         ["/bin/sh", "-c", cmd],
@@ -277,14 +277,14 @@ def checkpoint_list(
         if len(parts) >= 3:
             checkpoints.append({
                 "sha": parts[0],
-                "message": parts[1],
-                "date": parts[2],
+                "date": parts[1],
+                "message": parts[2],
             })
         elif len(parts) == 2:
             checkpoints.append({
                 "sha": parts[0],
-                "message": parts[1],
-                "date": "",
+                "date": parts[1],
+                "message": "",
             })
 
     return json.dumps({"checkpoints": checkpoints})
@@ -729,7 +729,7 @@ Returns:
             "error": "Token required for execution.  Run with dry_run=True first.",
         })
 
-        # --- Verify gate (always runs, regardless of transport) ---
+    # --- Verify gate (always runs, regardless of transport) ---
     if posixpath.isabs(verify_path):
         verify_path_full = verify_path
     else:
@@ -769,7 +769,7 @@ Returns:
             verify_result, author_name, author_email, token,
             create_pr,
         )
-# --- Git branch check/create ---
+    # --- Git branch check/create ---
     _run(f"git checkout -b {shlex.quote(branch)} 2>/dev/null || git checkout {shlex.quote(branch)}")
 
     # --- Git add / commit ---
@@ -802,7 +802,7 @@ Returns:
                 "error": commit_err or commit_out,
             })
 
-        # --- Git push (with transport fallback to API push) ---
+    # --- Git push (with transport fallback to API push) ---
     force_flag = " --force" if allow_force_push else ""
     push_cmd = (
         f"git -c credential.helper= "
@@ -840,7 +840,7 @@ Returns:
                 "sha": sha,
                 "verify_result": verify_result,
             })
-# --- Optionally create PR ---
+    # --- Optionally create PR ---
     pr_url: str | None = None
     if create_pr:
         pr_cmd = (
@@ -1136,8 +1136,6 @@ def sandbox_create_pr(
        without calling this tool directly.
 
     Unlike :func:`submit`, this tool uses the GitHub Objects API
-
-    Unlike :func:`submit`, this tool uses the GitHub Objects API
     (blob → tree → commit → ref) to push the branch, which works when
     the injected token cannot push via HTTPS git (e.g. GitHub App
     installation tokens).
@@ -1330,7 +1328,6 @@ def sandbox_create_pr(
     if pr_body:
         body_b64 = base64.b64encode(pr_body.encode("utf-8")).decode("ascii")
         # Wrap pr_cmd: write body to a temp file, run pr_cmd with --body-file, then clean up
-        base_cmd = pr_cmd
         base_cmd = pr_cmd
         pr_cmd = (
             f"BODY_FILE=$(mktemp) &&"
