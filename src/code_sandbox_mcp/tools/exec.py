@@ -315,6 +315,7 @@ def sandbox_exec_background(container_id: str, commands: list[str], working_dir:
         f"echo {shlex.quote(encoded)} | base64 -d > {tmpf} && chmod +x {tmpf} && {tmpf}; rc=$?; rm -f {tmpf}; exit $rc"
     )
     bg_cmd = (
+        f"date +%s > /tmp/{job_id}.start && "
         f"nohup /bin/sh -c {shlex.quote(inner_cmd)} "
         f"> /tmp/{job_id}.out 2> /tmp/{job_id}.err; "
         f"echo $? > /tmp/{job_id}.exit"
@@ -334,18 +335,31 @@ def sandbox_exec_check(container_id: str, job_id: str) -> str:
     Use this to poll the status of a job started with
     :func:`sandbox_exec_background`.
 
-    The function reads the exit code and output files written by the
-    background job and returns a status message.  If the job is still
-    running, it returns ``"running"``.  If the job has completed, it
-    returns the stdout output (or error message on failure).
+    Reads the exit code and output files written by the background
+    job and returns a JSON status object with timing information
+    suitable for human-in-the-loop decision making.
 
     Args:
         container_id: 12-character container ID prefix.
         job_id: Job ID returned by :func:`sandbox_exec_background`.
 
     Returns:
-        Status string: ``"running"`` if still in progress, stdout
-        output on success, or ``"Error: ..."`` on failure.
+        JSON string with fields:
+
+        * ``status``: ``"running"`` (job still in progress),
+          ``"completed"`` (job finished), or ``"error"``
+          (container not found / Docker API error).
+        * ``elapsed_seconds``: seconds since the job started
+          (``null`` if the ``.start`` file is unavailable, e.g.
+          for jobs started before the timing feature was added).
+        * ``last_output_seconds_ago``: seconds since stdout/stderr
+          was last written (``null`` if no output files exist yet).
+          Only present when ``status`` is ``"running"``.
+        * ``exit_code``: integer exit code (only when ``status``
+          is ``"completed"``).
+        * ``output``: stdout text on success (only when
+          ``status`` is ``"completed"`` and ``exit_code`` is 0).
+        * ``error`` / ``stderr``: error details on failure.
     """
     # Recovery/poll path: use a short Docker API timeout so a wedged or
     # unhealthy container fails fast instead of hanging the session
@@ -354,49 +368,108 @@ def sandbox_exec_check(container_id: str, job_id: str) -> str:
     try:
         container = client.containers.get(container_id)
     except NotFound:
-        return f"Error: container {container_id[:12]} not found"
+        return json.dumps({"status": "error", "error": f"container {container_id[:12]} not found"})
     except Exception as e:
-        return f"Error: {e}"
+        return json.dumps({"status": "error", "error": str(e)})
 
-    # Check exit code file
-    exit_code_result = container.exec_run(
-        ["/bin/sh", "-c", f"cat /tmp/{job_id}.exit 2>/dev/null || echo 'not_found'"],
-        stdout=True,
-        stderr=False,
+    # --- Single exec: gather timing, staleness, and exit status ---
+    status_result = container.exec_run(
+        [
+            "/bin/sh", "-c",
+            "echo NOW=$(date +%s); "
+            "echo START=$(cat /tmp/{}.start 2>/dev/null || echo ''); "
+            "echo OUT_MTIME=$(stat -c %Y /tmp/{}.out 2>/dev/null || echo 0); "
+            "echo ERR_MTIME=$(stat -c %Y /tmp/{}.err 2>/dev/null || echo 0); "
+            "echo EXIT=$(cat /tmp/{}.exit 2>/dev/null || echo 'not_found')".format(
+                job_id, job_id, job_id, job_id,
+            ),
+        ],
+        stdout=True, stderr=False,
     )
-    exit_code_output = exit_code_result[1].decode("utf-8", errors="replace").strip()
+    status_output = status_result[1].decode("utf-8").strip()
+    status_kv: dict[str, str] = {}
+    for line in status_output.split("\n"):
+        if "=" in line:
+            k, v = line.split("=", 1)
+            status_kv[k.strip()] = v.strip()
+
+    # --- Parse now (safe) ---
+    now = 0
+    try:
+        now = int(status_kv.get("NOW", "0"))
+    except (ValueError, TypeError):
+        pass
+
+    # --- Elapsed: read .start file (available for jobs started after 2026-06) ---
+    elapsed_seconds = None
+    start_raw = status_kv.get("START", "")
+    if start_raw:
+        try:
+            start_epoch = int(start_raw)
+            elapsed_seconds = now - start_epoch
+        except (ValueError, TypeError):
+            pass
+
+    # --- Staleness: time since last output write ---
+    last_output_seconds_ago = None
+    try:
+        out_mtime = int(status_kv.get("OUT_MTIME", "0"))
+        err_mtime = int(status_kv.get("ERR_MTIME", "0"))
+        last_mtime = out_mtime if out_mtime > err_mtime else err_mtime
+        if last_mtime > 0:
+            last_output_seconds_ago = now - last_mtime
+    except (ValueError, TypeError):
+        pass
+
+    # --- Check exit code file ---
+    exit_code_output = status_kv.get("EXIT", "not_found")
 
     if exit_code_output == "not_found":
-        return "running"
+        return json.dumps({
+            "status": "running",
+            "elapsed_seconds": elapsed_seconds,
+            "last_output_seconds_ago": last_output_seconds_ago,
+        })
 
-    exit_code = int(exit_code_output) if exit_code_output else 0
+    try:
+        exit_code = int(exit_code_output) if exit_code_output else 0
+    except (ValueError, TypeError):
+        exit_code = -1
 
-    # Read stdout
+    # --- Read stdout ---
     stdout_result = container.exec_run(
         ["/bin/sh", "-c", f"cat /tmp/{job_id}.out"],
-        stdout=True,
-        stderr=True,
+        stdout=True, stderr=True,
     )
     stdout_text = stdout_result[1].decode("utf-8", errors="replace") if stdout_result[1] else ""
+
+    result: dict[str, Any] = {
+        "status": "completed",
+        "elapsed_seconds": elapsed_seconds,
+        "exit_code": exit_code,
+    }
 
     if exit_code != 0:
         stderr_result = container.exec_run(
             ["/bin/sh", "-c", f"cat /tmp/{job_id}.err"],
-            stdout=True,
-            stderr=True,
+            stdout=True, stderr=True,
         )
         stderr_text = stderr_result[1].decode("utf-8", errors="replace") if stderr_result[1] else ""
-        return f"Error: exit code {exit_code}\n{stderr_text}"
+        result["error"] = f"exit code {exit_code}"
+        if stderr_text:
+            result["stderr"] = stderr_text
+    else:
+        result["output"] = stdout_text
 
-    # Clean up temp files
+    # --- Clean up temp files ---
     container.exec_run(
         [
             "/bin/sh",
             "-c",
-            f"rm -f /tmp/{job_id}.out /tmp/{job_id}.err /tmp/{job_id}.exit",
+            f"rm -f /tmp/{job_id}.out /tmp/{job_id}.err /tmp/{job_id}.exit /tmp/{job_id}.start",
         ],
         stdout=False,
         stderr=False,
     )
 
-    return stdout_text if stdout_text else ""
+    return json.dumps(result)
