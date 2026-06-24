@@ -728,9 +728,24 @@ class TestVerifyGateLogic:
         gate_on_test_fail: bool = True,
         gate_on_scan_error: bool = True,
         gate_on_scan_warning: bool = False,
+        incomplete_layers: set[str] | None = None,
     ) -> tuple[bool, list[str]]:
         """Simulate the gate logic from run_verify."""
         reasons: list[str] = []
+
+        # Incomplete check — mirrors run_verify layer_gate_map logic
+        if incomplete_layers:
+            layer_gate_map = {
+                "lint": gate_on_lint_error,
+                "type": gate_on_type_error,
+                "test": gate_on_test_fail,
+                "scan": gate_on_scan_error,
+            }
+            for layer_name in sorted(incomplete_layers):
+                if layer_gate_map.get(layer_name, True):
+                    reasons.append(
+                        f"verification incomplete: {layer_name} not_available"
+                    )
 
         if gate_on_lint_error:
             lint_errors = [
@@ -908,6 +923,156 @@ class TestVerifyGateLogic:
         test = {"status": "skipped", "message": "no test output"}
         passed, _ = self._simulate_gate([], [], test, [])
         assert passed is True
+
+    def test_incomplete_type_layer_passes_gate_when_flag_false(self) -> None:
+        passed, reasons = self._simulate_gate(
+            [], [], {"status": "ok", "passed": 5}, [],
+            gate_on_type_error=False,
+            incomplete_layers={"type"},
+        )
+        assert passed is True
+
+    def test_incomplete_type_layer_fails_gate_when_flag_true(self) -> None:
+        passed, reasons = self._simulate_gate(
+            [], [], {"status": "ok", "passed": 5}, [],
+            gate_on_type_error=True,
+            incomplete_layers={"type"},
+        )
+        assert passed is False
+        assert any("incomplete" in r for r in reasons)
+
+    def test_incomplete_lint_layer_passes_gate_when_flag_false(self) -> None:
+        passed, reasons = self._simulate_gate(
+            [], [], {"status": "ok", "passed": 5}, [],
+            gate_on_lint_error=False,
+            incomplete_layers={"lint"},
+        )
+        assert passed is True
+
+    def test_incomplete_lint_layer_fails_gate_when_flag_true(self) -> None:
+        passed, reasons = self._simulate_gate(
+            [], [], {"status": "ok", "passed": 5}, [],
+            gate_on_lint_error=True,
+            incomplete_layers={"lint"},
+        )
+        assert passed is False
+        assert any("incomplete" in r for r in reasons)
+
+    def test_incomplete_scan_layer_passes_gate_when_flag_false(self) -> None:
+        passed, reasons = self._simulate_gate(
+            [], [], {"status": "ok", "passed": 5}, [],
+            gate_on_scan_error=False,
+            incomplete_layers={"scan"},
+        )
+        assert passed is True
+
+    def test_incomplete_test_layer_passes_gate_when_flag_false(self) -> None:
+        passed, reasons = self._simulate_gate(
+            [], [], {"status": "ok", "passed": 5}, [],
+            gate_on_test_fail=False,
+            incomplete_layers={"test"},
+        )
+        assert passed is True
+
+
+# ===================================================================
+# _run_pyright_verify tests
+# ===================================================================
+
+
+class TestRunPyrightVerify:
+    """Tests for _run_pyright_verify with mocked container."""
+
+    def _make_result(self, ec: int, stdout: str = "", stderr: str = ""):
+        """Create a tuple matching container.exec_run return format."""
+        return (ec, (stdout.encode("utf-8"), stderr.encode("utf-8")))
+
+    def test_exit_code_1_returns_findings(self) -> None:
+        from unittest.mock import MagicMock
+        from src.code_sandbox_mcp.edit_verify import _run_pyright_verify
+
+        container = MagicMock()
+        pyright_output = json.dumps({
+            "generalDiagnostics": [
+                {
+                    "file": "test.py",
+                    "severity": "error",
+                    "message": "Cannot assign to None",
+                    "range": {"start": {"line": 5}},
+                    "rule": "reportGeneralTypeIssues",
+                }
+            ]
+        })
+        container.exec_run.return_value = self._make_result(1, pyright_output)
+
+        result = _run_pyright_verify(container, "/app/test.py")
+        assert result.status == "findings"
+        assert len(result.findings) == 1
+        assert result.findings[0]["line"] == 6
+
+    def test_exit_code_0_returns_ok(self) -> None:
+        from unittest.mock import MagicMock
+        from src.code_sandbox_mcp.edit_verify import _run_pyright_verify
+
+        container = MagicMock()
+        pyright_output = json.dumps({"generalDiagnostics": []})
+        container.exec_run.return_value = self._make_result(0, pyright_output)
+
+        result = _run_pyright_verify(container, "/app/test.py")
+        assert result.status == "ok"
+        assert result.findings == []
+
+    def test_exit_code_127_returns_not_available(self) -> None:
+        from unittest.mock import MagicMock
+        from src.code_sandbox_mcp.edit_verify import _run_pyright_verify
+
+        container = MagicMock()
+        container.exec_run.return_value = self._make_result(127)
+
+        result = _run_pyright_verify(container, "/app/test.py")
+        assert result.status == "not_available"
+
+    def test_exit_code_250_with_findings_returns_ok(self) -> None:
+        from unittest.mock import MagicMock
+        from src.code_sandbox_mcp.edit_verify import _run_pyright_verify
+
+        container = MagicMock()
+        pyright_output = json.dumps({
+            "generalDiagnostics": [
+                {
+                    "file": "test.py",
+                    "severity": "error",
+                    "message": "Undefined variable",
+                    "range": {"start": {"line": 10}},
+                    "rule": "reportUndefinedVariable",
+                }
+            ]
+        })
+        container.exec_run.return_value = self._make_result(250, pyright_output)
+
+        result = _run_pyright_verify(container, "/app/test.py")
+        assert result.status == "findings"
+        assert len(result.findings) == 1
+
+    def test_exit_code_250_without_findings_returns_error(self) -> None:
+        from unittest.mock import MagicMock
+        from src.code_sandbox_mcp.edit_verify import _run_pyright_verify
+
+        container = MagicMock()
+        container.exec_run.return_value = self._make_result(250, "", "FATAL ERROR: OOM")
+
+        result = _run_pyright_verify(container, "/app/test.py")
+        assert result.status == "error"
+
+    def test_exit_code_2_with_empty_output_returns_error(self) -> None:
+        from unittest.mock import MagicMock
+        from src.code_sandbox_mcp.edit_verify import _run_pyright_verify
+
+        container = MagicMock()
+        container.exec_run.return_value = self._make_result(2)
+
+        result = _run_pyright_verify(container, "/app/test.py")
+        assert result.status == "error"
 
 
 # ===================================================================

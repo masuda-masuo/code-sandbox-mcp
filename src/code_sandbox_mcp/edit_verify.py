@@ -1166,13 +1166,15 @@ def _run_pyright_verify(container: Any, path: str) -> VerifyResult:
 
     if ec == 127:
         return _envelope_not_available("pyright", "pyright not installed in container")
-    if ec not in (0, 1):
-        return _envelope_error("pyright", stderr_text.strip() or f"exit code {ec}", ec)
 
     stdout_text = stdout_part.decode("utf-8", errors="replace") if stdout_part else ""
     findings = _parse_pyright_output(stdout_text, path)
     for r in findings:
         r["severity"] = "error"
+
+    if ec not in (0, 1) and not findings:
+        return _envelope_error("pyright", stderr_text.strip() or f"exit code {ec}", ec)
+
     return _envelope_ok("pyright", findings, ec)
 
 
@@ -1973,12 +1975,18 @@ def run_verify(
     gate_fail_reasons: list[str] = []
     incomplete = False
 
+    layer_gate_map = {
+        "lint": gate_on_lint_error,
+        "type": gate_on_type_error,
+        "test": gate_on_test_fail,
+        "scan": gate_on_scan_error,
+    }
+
     for layer_name, results in layers.items():
         for vr in results:
             if vr.status in ("not_available", "error"):
                 incomplete = True
-                if strict:
-                    # strict gate: verification incomplete -> fail
+                if strict and layer_gate_map.get(layer_name, True):
                     gate_fail_reasons.append(
                         f"verification incomplete: {vr.tool} {vr.status}"
                         + (f" ({vr.detail})" if vr.detail else "")
