@@ -333,6 +333,41 @@ class CloneResult(NamedTuple):
     error: str | None
 
 
+def _run_pip_install(
+    container: Any,
+    clone_repo: str,
+    clone_dest: str,
+    pip_extras: str,
+) -> None:
+    """Run pip install inside the container after a successful clone.
+
+    Args:
+        container: Docker container object.
+        clone_repo: Repository in ``"owner/name"`` format.
+        clone_dest: Destination directory for the clone.
+        pip_extras: Pip extras string (e.g. ``"[dev]"``).
+    """
+    repo_name = clone_repo.split("/")[-1]
+    safe_dest = shlex.quote(f"{clone_dest}/{repo_name}")
+    install_cmd = f"cd {safe_dest} && pip install -e '.{pip_extras}' -q"
+    exit_code, output = container.exec_run(
+        ["/bin/sh", "-c", install_cmd],
+        stdout=True,
+        stderr=True,
+        demux=True,
+    )
+    stdout_part, stderr_part = output or (b"", b"")
+    install_output = stdout_part.decode("utf-8", errors="replace") if stdout_part else ""
+    stderr_text = stderr_part.decode("utf-8", errors="replace") if stderr_part else ""
+    if exit_code != 0:
+        logger.warning(
+            "pip install deps failed (extras=%s, exit=%d): %s",
+            pip_extras,
+            exit_code,
+            (stderr_text or install_output).strip(),
+        )
+
+
 def _try_clone_into_container(
     container: Any,
     container_id: str,
@@ -559,7 +594,7 @@ def sandbox_initialize(
                and installs dev dependencies.
         pip_extras: Pip extras string (e.g. ``"[dev]"``) for dev install.
                Pass ``None`` to skip pip install entirely.
-               Only used when *pr* is specified.
+               Also used when *clone_repo* is specified.
         mem_limit: Optional memory-limit override (e.g. ``"2g"``).
                The default profile caps containers at 512MB with swap
                disabled, which OOM-thrashes heavy installs (e.g. torch)
@@ -575,7 +610,7 @@ def sandbox_initialize(
     Returns:
         Container ID string (12-character prefix).
         If *clone_repo* is specified, a message about the clone copy
-        is appended.
+        is appended (and dev install if pip_extras is set).
         If *pr* is specified, a message about the PR branch setup
         is appended.
 
@@ -662,6 +697,8 @@ def sandbox_initialize(
             clone_msg = f" (clone_repo failed: {err})"
         else:
             clone_msg = " " + msg
+        if pip_extras is not None and err is None:
+            _run_pip_install(container, clone_repo, clone_dest, pip_extras)
     elif clone_repo and pr is not None:
         logger.info(
             "Skipping clone_repo=%s (pr=%s handles its own clone)",
@@ -807,7 +844,7 @@ def run_container_and_exec(
                and installs dev dependencies.
         pip_extras: Pip extras string (e.g. ``"[dev]"``) for dev install.
                Pass ``None`` to skip pip install entirely.
-               Only used when *pr* is specified.
+               Also used when *clone_repo* is specified.
         timeout: Maximum seconds to let the command run (``0`` = no
                limit, the default).  When the timeout expires the process
                is killed and the tool returns ``status="timeout"`` with
@@ -889,6 +926,8 @@ def run_container_and_exec(
             clone_dest,
             inject_vcs_token,
         )
+        if pip_extras is not None and clone_error is None:
+            _run_pip_install(container, clone_repo, clone_dest, pip_extras)
     elif clone_repo and pr is not None:
         logger.info(
             "Skipping clone_repo=%s (pr=%s handles its own clone)",

@@ -445,6 +445,7 @@ class TestCloneRepoPrInteraction:
         sandbox_initialize(
             image="python@sha256:0000000000000000000000000000000000000000000000000000000000000000",
             clone_repo="owner/repo",
+            pip_extras=None,
         )
 
         # _clone_shiori_repo_to_container SHOULD be called
