@@ -84,7 +84,7 @@ def sandbox_exec(
             estimated tokens and a ``resource://run/{run_id}/output``
             handle is included for full retrieval.
         argv: When given, run this argument vector **directly** (no
-            ``/bin/sh -c``), so quoting, ``$'...'`` and embedded newlines
+            ``/bin/bash -c``), so quoting, ``$'...'`` and embedded newlines
             are passed through literally.  Mutually exclusive with
             *commands*.  Intended for VCS/``gh`` calls where shell
             quoting is a footgun (issue #234 / #228).  *working_dir* is
@@ -105,7 +105,7 @@ def sandbox_exec(
 
     # --- Mode selection: commands (shell) vs argv (shell-free execve) ---
     # ``argv`` runs the program directly via ``exec_run`` without an
-    # intervening ``/bin/sh -c``, so quoting / ``$'...'`` / embedded
+    # intervening ``/bin/bash -c``, so quoting / ``$'...'`` / embedded
     # newlines pass through literally (issue #234, #228 footgun).
     if argv is not None and commands:
         return json.dumps(
@@ -186,7 +186,7 @@ def sandbox_exec(
             f"; exit $rc"
         )
         exit_code, output = container.exec_run(
-            ["/bin/sh", "-c", cmd],
+            ["/bin/bash", "-c", cmd],
             stdout=True,
             stderr=True,
             demux=True,
@@ -316,12 +316,12 @@ def sandbox_exec_background(container_id: str, commands: list[str], working_dir:
     )
     bg_cmd = (
         f"date +%s > /tmp/{job_id}.start && "
-        f"nohup /bin/sh -c {shlex.quote(inner_cmd)} "
+        f"nohup /bin/bash -c {shlex.quote(inner_cmd)} "
         f"> /tmp/{job_id}.out 2> /tmp/{job_id}.err; "
         f"echo $? > /tmp/{job_id}.exit"
     )
     container.exec_run(
-        ["/bin/sh", "-c", bg_cmd],
+        ["/bin/bash", "-c", bg_cmd],
         detach=True,
         stdout=False,
         stderr=False,
