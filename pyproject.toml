@@ -12,6 +12,7 @@ dependencies = [
     "docker>=7.0.0",
     "httpx>=0.28.0",
     "pyjwt[crypto]>=2.0.0",
+    "platformdirs>=3.0.0",
 ]
 
 [project.scripts]
