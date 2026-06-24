@@ -157,7 +157,7 @@ class TestParseEslintOutput:
 
 
 # ===================================================================
-# _parse_pyright_output tests
+# _parse_semgrep_output tests
 # ===================================================================
 
 
@@ -317,9 +317,3 @@ class TestLintFileParsers:
     def test_ruff_non_list_json(self) -> None:
         """Ruff output that is valid JSON but not a list."""
         assert _parse_ruff_output('{"summary": "ok"}', "file.py") == []
-
-
-# ===================================================================
-# type_check_file parsers: edge cases
-# ===================================================================
-
