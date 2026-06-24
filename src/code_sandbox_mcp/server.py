@@ -67,11 +67,9 @@ from .tools.vcs import (
     checkpoint_restore,
     clone_repo,
     issue_view,
-    sandbox_create_pr,
     submit,
 )
 from .tools.verify import (
-    apply_patch,
     lint_in_container,
     search_in_container,
     transform_file,
@@ -93,8 +91,8 @@ submit = mcp.tool()(submit)
 checkpoint = mcp.tool()(checkpoint)
 checkpoint_list = mcp.tool()(checkpoint_list)
 checkpoint_restore = mcp.tool()(checkpoint_restore)
-sandbox_create_pr = mcp.tool()(sandbox_create_pr)  # deprecated, use submit
 clone_repo = mcp.tool()(clone_repo)
+
 
 
 # Container lifecycle tool registrations
@@ -114,8 +112,8 @@ copy_file = mcp.tool()(copy_file)
 read_file_range = mcp.tool()(read_file_range)
 list_files = mcp.tool()(list_files)
 
+
 # Verify tool registrations
-apply_patch = mcp.tool()(apply_patch)
 transform_file = mcp.tool()(transform_file)
 search_in_container = mcp.tool()(search_in_container)
 lint_in_container = mcp.tool()(lint_in_container)

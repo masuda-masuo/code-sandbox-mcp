@@ -728,14 +728,15 @@ def apply_patch_to_file(
 ) -> str:
     """Apply a unified diff to a file inside the sandbox container.
 
-    .. deprecated::
+    .. note::
 
-       ``apply_patch`` is deprecated for AI-authored edits (see the tool
-       docstring).  This now delegates to :func:`transform_file_in_container`,
-       which runs ``git apply --recount`` **inside the container** — more
-       robust for machine-generated diffs than the previous strict host-side
-       parser, and consolidating diff application onto the imperative edit
-       path.
+       ``apply_patch`` is **no longer registered as an MCP tool** (see
+       issue #256).  The function remains as an internal helper that
+       delegates to :func:`transform_file_in_container`, which runs
+       ``git apply --recount`` **inside the container** — more robust
+       for machine-generated diffs than the previous strict host-side
+       parser, and consolidating diff application onto the imperative
+       edit path.
     """
     if not diff_content.strip():
         return f"Patch applied (no changes) to {file_path} in container {container_id[:12]}"

@@ -254,8 +254,9 @@ def write_file_sandbox(
     See also:
         :func:`read_file_range` — inspect file content before editing.
         :func:`transform_file` — imperative edits (bulk / structural / computed).
-        :func:`apply_patch` — machine-generated diffs only (deprecated for
-        AI-authored edits).
+        :func:`transform_file` — imperative edits (bulk / structural /
+        computed).  For machine-generated diffs, use the internal
+        ``apply_patch`` helper (no longer registered as a tool).
     """
     client = _docker()
     try:
