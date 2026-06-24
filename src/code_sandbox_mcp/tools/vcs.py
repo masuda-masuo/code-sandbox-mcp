@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import posixpath
 import re
 import shlex
+import time as _time
 from typing import Any
 
 from docker.errors import NotFound
+from fastmcp import Context
 
 from code_sandbox_mcp.edit_verify import run_verify
 from code_sandbox_mcp.journal import get_or_create_run_id, record_boundary_crossing
@@ -575,7 +578,7 @@ def _consume_confirmation_token(
 # ---------------------------------------------------------------------------
 
 
-def submit(
+async def submit(
     container_id: str,
     repo: str,
     branch: str,
@@ -594,6 +597,7 @@ def submit(
     author_name: str | None = None,
     author_email: str | None = None,
     language: str | None = None,
+    ctx: "Context | None" = None,
 ) -> str:
     """Stage, commit, push, and optionally create a PR.
 
@@ -649,6 +653,12 @@ Args:
         ``docker/Dockerfile.sandbox``
         (``code-sandbox-mcp[bot]@users.noreply.github.com``).
         When ``None``, the image-level default is used.
+    language: Explicit language override (``"python"``, ``"js"``,
+        ``"ts"``, ``"go"``).  Passed through to verify gate.
+    ctx: MCP context injected by FastMCP.  When present, the
+        verify gate runs in a background thread with periodic
+        progress notifications to prevent HTTP timeouts during
+        long verification runs (Issue #253).
 
 Returns:
     JSON string with operation result.
@@ -736,13 +746,36 @@ Returns:
         verify_path_full = verify_path
     else:
         verify_path_full = f"{working_dir}/{verify_path}".rstrip("/")
-    verify_result = run_verify(
-        client,
-        cid,
-        verify_path_full,
-        strict=True,
-        language=language,
-    )
+
+    if ctx is not None:
+        loop = asyncio.get_running_loop()
+
+        def _run_verify():
+            return run_verify(
+                client, cid, verify_path_full, strict=True, language=language,
+            )
+
+        verify_future = loop.run_in_executor(None, _run_verify)
+        start = _time.monotonic()
+        while not verify_future.done():
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(verify_future), timeout=15.0,
+                )
+            except asyncio.TimeoutError:
+                elapsed = _time.monotonic() - start
+                await ctx.report_progress(
+                    0, None, f"Verify gate running... ({elapsed:.0f}s)",
+                )
+        verify_result = await verify_future
+    else:
+        verify_result = run_verify(
+            client,
+            cid,
+            verify_path_full,
+            strict=True,
+            language=language,
+        )
 
     gate_passed = verify_result.get("gate_passed", False)
     if not gate_passed and on_gate_fail != "draft":

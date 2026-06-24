@@ -1,6 +1,8 @@
 """Tests for the External VCS tools (issue_view, submit) — Issue #55."""
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 from unittest.mock import MagicMock, patch
 
@@ -34,7 +36,9 @@ def _make_client_mock(container: MagicMock):
     return client
 
 
-def _decode(result: str) -> dict:
+def _decode(result):
+    if inspect.iscoroutine(result):
+        result = asyncio.run(result)
     return json.loads(result)
 
 

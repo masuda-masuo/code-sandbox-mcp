@@ -9,6 +9,7 @@ Covers:
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, patch
 
 from docker.errors import APIError, NotFound
@@ -155,8 +156,17 @@ class TestExecCheckTimeout:
     @patch("code_sandbox_mcp.tools.exec._docker")
     def test_uses_recovery_timeout(self, mock_docker: MagicMock) -> None:
         container = MagicMock()
-        # Exit-code file absent -> job still running, no further calls.
-        container.exec_run.return_value = (0, b"not_found")
+        # sandbox_exec_check makes multiple exec_run calls:
+        #   1. date +%s          → epoch timestamp
+        #   2. cat .start        → empty (no start file for old jobs)
+        #   3. stat .out/.err    → "0" (no output files yet)
+        #   4. cat .exit         → "not_found" (job still running)
+        container.exec_run.side_effect = [
+            (0, b"1700000000"),
+            (0, b""),
+            (0, b"0"),
+            (0, b"not_found"),
+        ]
         client = MagicMock()
         client.containers.get.return_value = container
         mock_docker.return_value = client
@@ -164,7 +174,10 @@ class TestExecCheckTimeout:
         result = sandbox_exec_check("abc123def456", "job-1")
 
         mock_docker.assert_called_once_with(timeout=RECOVERY_DOCKER_TIMEOUT)
-        assert result == "running"
+        parsed = json.loads(result)
+        assert parsed["status"] == "running"
+        assert parsed["elapsed_seconds"] is None
+        assert parsed["last_output_seconds_ago"] is None
 
 
 class TestRecoveryTimeoutConfigurable:
