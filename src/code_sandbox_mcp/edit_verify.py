@@ -843,11 +843,13 @@ def transform_file_in_container(
 ) -> dict[str, Any]:
     """Apply an imperative ``transform(text) -> text`` to a file in-container.
 
-    The caller's *code* must define a top-level callable
-    ``transform(text: str) -> str``.  It is base64-encoded and executed by a
-    Python runner **inside the disposable sandbox container** (never on the
-    host), the result is written back, and a unified diff of the change is
-    returned so the effect is visible without a separate read-back.
+    The caller's *code* is executed as a complete Python module; the only
+    requirement is that a top-level callable ``transform(text: str) -> str``
+    exists once it finishes (helper functions, classes, and imports alongside
+    it are fine).  It is base64-encoded and executed by a Python runner
+    **inside the disposable sandbox container** (never on the host), the result
+    is written back, and a unified diff of the change is returned so the effect
+    is visible without a separate read-back.
 
     Returns a dict with ``status`` (``"ok"`` / ``"error"``).  On success:
     ``changed`` (bool), ``diff`` (str), ``new_size`` (int).  On failure:

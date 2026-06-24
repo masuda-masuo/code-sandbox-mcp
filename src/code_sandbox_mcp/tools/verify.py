@@ -77,14 +77,30 @@ def transform_file(
     changes (e.g. a regex applied to every occurrence, renaming a symbol,
     re-indenting, applying a value derived from the existing text).
 
-    *code* must define a top-level callable ``transform(text: str) -> str``.
-    It is base64-encoded and executed by a Python runner **inside the
-    disposable sandbox container** (never on the host), the result is written
-    back, and a **unified diff of the change is returned** so you can verify
-    the effect without a separate read-back.
+    *code* is executed as a **complete Python module** inside the disposable
+    sandbox container (never on the host).  The **only** requirement is that,
+    once the module finishes executing, a top-level callable
+    ``transform(text: str) -> str`` exists — you are free to define helper
+    functions, classes, ``import`` modules, and any number of other top-level
+    statements alongside it.  ``transform`` is called with the file's current
+    text and must return the new text; the result is written back and a
+    **unified diff of the change is returned** so you can verify the effect
+    without a separate read-back.
 
-    Passing the program as a single ``code`` string (not a shell command) means
-    multibyte characters, quotes, and newlines need no escaping.
+    *code* is base64-encoded before transport, so quotes (including
+    triple-quoted strings), backslashes, multibyte characters, and newlines
+    need no escaping — pass the program as a single ``code`` string, exactly as
+    you would write it in a ``.py`` file.
+
+    Example — uppercase every TODO marker, using a helper::
+
+        import re
+
+        def _to_upper(m):
+            return m.group(0).upper()
+
+        def transform(text):
+            return re.sub("todo", _to_upper, text, flags=re.IGNORECASE)
 
     .. hint::
 
@@ -97,7 +113,9 @@ def transform_file(
     Args:
         container_id: 12-character container ID prefix.
         file_path: Absolute path to the file inside the container.
-        code: Python source defining ``transform(text: str) -> str``.
+        code: Python source defining a top-level ``transform(text: str) -> str``
+            (helper functions, classes, and ``import`` statements alongside it
+            are fine; only the ``transform`` callable is required).
             Executed as a **full Python interpreter** (not a restricted DSL):
             ``__builtins__``, ``open()``, ``import``, ``subprocess``, etc.
             are all available inside the disposable sandbox container.
