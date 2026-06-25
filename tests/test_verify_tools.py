@@ -1,6 +1,6 @@
-"""Tests for verify MCP tool wrappers (tools/verify.py).
+"""Tests for verify MCP tool wrappers.
 
-Tests cover the 6 wrapper functions that do container-existence
+Tests cover wrapper functions in tools/verify.py and tools/file.py that do container-existence
 checking then delegate to edit_verify module functions:
   - apply_patch
   - transform_file
@@ -17,11 +17,13 @@ from unittest.mock import MagicMock, patch
 
 from docker.errors import NotFound
 
+from code_sandbox_mcp.tools.file import (
+    transform_file,
+)
 from code_sandbox_mcp.tools.verify import (
     apply_patch,
     lint_in_container,
     search_in_container,
-    transform_file,
     type_check_in_container,
     verify_in_container,
 )
@@ -92,7 +94,7 @@ class TestApplyPatch:
 class TestTransformFile:
     """Tests for the transform_file wrapper."""
 
-    @patch("code_sandbox_mcp.tools.verify._docker")
+    @patch("code_sandbox_mcp.tools.file._docker")
     def test_container_not_found(self, mock_docker: MagicMock) -> None:
         mock_client = MagicMock()
         mock_client.containers.get.side_effect = NotFound("not found")
@@ -104,7 +106,7 @@ class TestTransformFile:
         assert result["status"] == "error"
         assert "not found" in result["error"]
 
-    @patch("code_sandbox_mcp.tools.verify._docker")
+    @patch("code_sandbox_mcp.tools.file._docker")
     def test_docker_error(self, mock_docker: MagicMock) -> None:
         mock_client = MagicMock()
         mock_client.containers.get.side_effect = Exception("connection refused")
@@ -116,8 +118,8 @@ class TestTransformFile:
         assert result["status"] == "error"
         assert "connection refused" in result["error"]
 
-    @patch("code_sandbox_mcp.tools.verify._docker")
-    @patch("code_sandbox_mcp.tools.verify.transform_file_in_container")
+    @patch("code_sandbox_mcp.tools.file._docker")
+    @patch("code_sandbox_mcp.tools.file.transform_file_in_container")
     def test_delegates_without_changes(
         self,
         mock_impl: MagicMock,
@@ -138,10 +140,10 @@ class TestTransformFile:
             mock_client, "abc123", "/tmp/f.txt", "def transform(text): return text",
         )
 
-    @patch("code_sandbox_mcp.tools.verify._docker")
-    @patch("code_sandbox_mcp.tools.verify.transform_file_in_container")
-    @patch("code_sandbox_mcp.tools.verify.truncate_output")
-    @patch("code_sandbox_mcp.tools.verify.paginate_output")
+    @patch("code_sandbox_mcp.tools.file._docker")
+    @patch("code_sandbox_mcp.tools.file.transform_file_in_container")
+    @patch("code_sandbox_mcp.tools.file.truncate_output")
+    @patch("code_sandbox_mcp.tools.file.paginate_output")
     def test_delegates_with_changes_and_paginates(
         self,
         mock_paginate: MagicMock,

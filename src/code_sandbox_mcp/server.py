@@ -59,6 +59,7 @@ from .tools.file import (
     copy_project,
     list_files,
     read_file_range,
+    transform_file,
     write_file_sandbox,
 )
 from .tools.vcs import (
@@ -72,7 +73,6 @@ from .tools.vcs import (
 from .tools.verify import (
     lint_in_container,
     search_in_container,
-    transform_file,
     type_check_in_container,
     verify_in_container,
 )

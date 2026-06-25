@@ -1,4 +1,4 @@
-"""File tools: write_file_sandbox, copy_project, copy_file, read_file_range, list_files."""
+"""File tools: write_file_sandbox, transform_file, copy_project, copy_file, read_file_range, list_files."""
 
 from __future__ import annotations
 
@@ -14,8 +14,14 @@ from pathlib import Path
 
 from docker.errors import APIError, NotFound
 
-from code_sandbox_mcp.edit_verify import read_file, read_file_lines, write_file
+from code_sandbox_mcp.edit_verify import (
+    read_file,
+    read_file_lines,
+    transform_file_in_container,
+    write_file,
+)
 from code_sandbox_mcp.journal import record_copy
+from code_sandbox_mcp.output_control import paginate_output, truncate_output
 from code_sandbox_mcp.tools.common import _docker
 
 # ---------------------------------------------------------------------------
@@ -246,6 +252,30 @@ def write_file_sandbox(
        keep ``old_str`` as short as uniquely identifying content.
        For removing multiple separate lines, use :func:`transform_file`
        or repeated single-line ``old_str`` calls.
+
+    .. rubric:: Use when
+
+    - **Editing files** inside the container — the default tool for AI-authored edits
+    - **Simple one-off string replacement** — use ``old_str`` mode for safe, unique-match edits
+    - **Creating new files** — use full overwrite mode
+    - **Appending to existing files** — use ``append=True``
+    - **Replacing a known line range** — use ``start_line``/``end_line``
+
+    .. rubric:: Don't use when
+
+    - **Bulk / repetitive / structural edits** — use :func:`transform_file` (imperative) instead
+    - **Edits where the new content is computed from existing text** — use :func:`transform_file` instead
+    - **Running shell commands** — use :func:`sandbox_exec` instead
+
+    .. rubric:: Prefer over
+
+    - Prefer over :func:`apply_patch` for AI-authored edits (no ``@@`` header errors)
+    - Prefer over ``sandbox_exec`` + ``sed`` for file editing (no quoting issues, safe uniqueness check)
+
+    .. rubric:: Fallback
+
+    - For complex transforms use :func:`transform_file`
+    - For inspecting content before editing use :func:`read_file_range`
 
     Args:
         container_id: 12-character container ID prefix.
@@ -505,6 +535,27 @@ def read_file_range(
        Use ``limit=-1`` to read all remaining lines from *offset*
        to end of file in one call.
 
+    .. rubric:: Use when
+
+    - Reading file content inside the container for inspection
+    - Paginating through large files with *offset*/*limit*
+    - Reading the full file with ``limit=-1``
+
+    .. rubric:: Don't use when
+
+    - **Running shell commands** — use :func:`sandbox_exec` instead
+    - **Searching for a pattern across files** — use :func:`search_in_container` instead
+    - **Editing files** — use :func:`write_file_sandbox` or :func:`transform_file` instead
+
+    .. rubric:: Prefer over
+
+    - Prefer over ``sandbox_exec cat`` for reading files (structured JSON response, pagination support)
+
+    .. rubric:: Fallback
+
+    - For searching content use :func:`search_in_container`
+    - For listing directory contents use :func:`list_files`
+
     Args:
         container_id: 12-character container ID prefix.
         file_path: Path to the file inside the container.
@@ -551,6 +602,27 @@ def list_files(
     Returns a JSON array of file paths sorted alphabetically.
     Hidden files (dotfiles) and directories under ``.git`` are
     excluded.
+
+    .. rubric:: Use when
+
+    - Exploring the container's filesystem structure
+    - Finding files matching a glob pattern (*pattern*)
+    - Getting a quick file count in a directory
+
+    .. rubric:: Don't use when
+
+    - **Reading file content** — use :func:`read_file_range` instead
+    - **Searching for text within files** — use :func:`search_in_container` instead
+    - **Running arbitrary shell commands** — use :func:`sandbox_exec` instead
+
+    .. rubric:: Prefer over
+
+    - Prefer over ``sandbox_exec find`` for listing files (structured JSON response, dotfiles excluded by default)
+
+    .. rubric:: Fallback
+
+    - For file content use :func:`read_file_range`
+    - For text search across files use :func:`search_in_container`
 
     Args:
         container_id: 12-character container ID prefix.
@@ -610,3 +682,139 @@ def list_files(
         "total": len(files),
         "files": files,
     })
+
+
+# ---------------------------------------------------------------------------
+# transform_file (moved from verify.py, issue #258)
+# ---------------------------------------------------------------------------
+
+
+def transform_file(
+    container_id: str,
+    file_path: str,
+    code: str,
+    max_lines: int = 200,
+    offset: int = 0,
+    limit: int = 100,
+) -> str:
+    """Edit a file imperatively by running Python that computes the new text.
+
+    The **imperative** edit path: instead of providing the new bytes
+    (:func:`write_file_sandbox`) or a diff (:func:`apply_patch`), you provide
+    *code* that transforms the file's content.  Ideal for edits that the
+    declarative tools handle poorly — bulk / repetitive / structural / computed
+    changes (e.g. a regex applied to every occurrence, renaming a symbol,
+    re-indenting, applying a value derived from the existing text).
+
+    *code* is executed as a **complete Python module** inside the disposable
+    sandbox container (never on the host).  The **only** requirement is that,
+    once the module finishes executing, a top-level callable
+    ``transform(text: str) -> str`` exists — you are free to define helper
+    functions, classes, ``import`` modules, and any number of other top-level
+    statements alongside it.  ``transform`` is called with the file's current
+    text and must return the new text; the result is written back and a
+    **unified diff of the change is returned** so you can verify the effect
+    without a separate read-back.
+
+    *code* is base64-encoded before transport, so quotes (including
+    triple-quoted strings), backslashes, multibyte characters, and newlines
+    need no escaping — pass the program as a single ``code`` string, exactly as
+    you would write it in a ``.py`` file.
+
+    Example — uppercase every TODO marker, using a helper::
+
+        import re
+
+        def _to_upper(m):
+            return m.group(0).upper()
+
+        def transform(text):
+            return re.sub("todo", _to_upper, text, flags=re.IGNORECASE)
+
+    .. hint::
+
+       For a single known string replacement prefer :func:`write_file_sandbox`
+       with ``old_str``.  Reach for ``transform_file`` when the edit is better
+       expressed as logic than as literal text — many occurrences, a pattern,
+       or a value computed from the file.  Always check the returned ``diff``;
+       an over-broad pattern can change more than intended.
+
+    .. rubric:: Use when
+
+    - Making **bulk / repetitive** edits (e.g. renaming a symbol across many files)
+    - Applying **structural / computed** transformations (e.g. regex-based rewrites, re-indentation)
+    - Writing **multi-line Python scripts** that need file I/O, ``subprocess``, or complex logic
+    - Edits where the new content is a **computed value** from the existing text
+
+    .. rubric:: Don't use when
+
+    - **Simple one-off string replacement** — use :func:`write_file_sandbox` with ``old_str`` instead
+    - **Line-range replacement** — use :func:`write_file_sandbox` with ``start_line``/``end_line`` instead
+    - **Appending to a file** — use :func:`write_file_sandbox` with ``append=True`` instead
+    - **Creating a new file** — use :func:`write_file_sandbox` full-overwrite mode instead
+
+    .. rubric:: Prefer over
+
+    - Prefer over :func:`apply_patch` for AI-authored edits (no ``@@`` header errors)
+    - Prefer over ``sandbox_exec`` + ``sed`` for file editing (no quoting issues)
+
+    .. rubric:: Fallback
+
+    - For simple declarative edits use :func:`write_file_sandbox`
+    - For inspecting content before editing use :func:`read_file_range`
+
+    Args:
+        container_id: 12-character container ID prefix.
+        file_path: Absolute path to the file inside the container.
+        code: Python source defining a top-level ``transform(text: str) -> str``
+            (helper functions, classes, and ``import`` statements alongside it
+            are fine; only the ``transform`` callable is required).
+            Executed as a **full Python interpreter** (not a restricted DSL):
+            ``__builtins__``, ``open()``, ``import``, ``subprocess``, etc.
+            are all available inside the disposable sandbox container.
+        max_lines: Maximum diff lines to show (summary truncation).
+        offset: Line offset for paging through a large diff (0-indexed).
+        limit: Maximum diff lines per page.
+
+    Returns:
+        JSON string.  On success: ``status="ok"``, ``changed`` (bool),
+        ``diff`` (str, paginated) and diff metadata (``shown``,
+        ``total_lines``, ``truncated``, ``next_offset``, ``has_more``).
+        On failure: ``status="error"`` with ``error`` (and ``traceback`` when
+        the caller's code raised).
+
+    See also:
+        :func:`write_file_sandbox` — declarative edits (the default path).
+        :func:`read_file_range` — inspect file content before editing.
+    """
+    client = _docker()
+    try:
+        _ = client.containers.get(container_id)
+    except NotFound:
+        return json.dumps(
+            {"status": "error", "error": f"container {container_id[:12]} not found"}
+        )
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)})
+
+    result = transform_file_in_container(client, container_id, file_path, code)
+
+    if result.get("status") == "ok" and result.get("changed"):
+        display, meta = truncate_output(
+            result.get("diff", ""),
+            max_lines=max_lines,
+            verbose="full",
+        )
+        page = paginate_output(display, offset=offset, limit=limit)
+        return json.dumps({
+            "status": "ok",
+            "changed": True,
+            "diff": page.content,
+            "shown": meta.shown,
+            "total_lines": meta.total_lines,
+            "truncated": meta.truncated,
+            "next_offset": page.next_offset,
+            "has_more": page.has_more,
+        })
+
+    return json.dumps(result)

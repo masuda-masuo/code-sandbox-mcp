@@ -1,4 +1,4 @@
-"""Verify tools: apply_patch, transform_file, search, lint, type_check, verify."""
+"""Verify tools: apply_patch, search_in_container, lint, type_check, verify_in_container."""
 
 from __future__ import annotations
 
@@ -10,10 +10,8 @@ from code_sandbox_mcp.edit_verify import (
     apply_patch_to_file,
     lint_file,
     search_files,
-    transform_file_in_container,
     type_check_file,
 )
-from code_sandbox_mcp.output_control import paginate_output, truncate_output
 from code_sandbox_mcp.tools.common import _docker
 
 
@@ -56,113 +54,6 @@ def apply_patch(container_id: str, file_path: str, diff_content: str) -> str:
     return apply_patch_to_file(client, container_id, file_path, diff_content)
 
 
-def transform_file(
-    container_id: str,
-    file_path: str,
-    code: str,
-    max_lines: int = 200,
-    offset: int = 0,
-    limit: int = 100,
-) -> str:
-    """Edit a file imperatively by running Python that computes the new text.
-
-    The **imperative** edit path: instead of providing the new bytes
-    (:func:`write_file_sandbox`) or a diff (:func:`apply_patch`), you provide
-    *code* that transforms the file's content.  Ideal for edits that the
-    declarative tools handle poorly — bulk / repetitive / structural / computed
-    changes (e.g. a regex applied to every occurrence, renaming a symbol,
-    re-indenting, applying a value derived from the existing text).
-
-    *code* is executed as a **complete Python module** inside the disposable
-    sandbox container (never on the host).  The **only** requirement is that,
-    once the module finishes executing, a top-level callable
-    ``transform(text: str) -> str`` exists — you are free to define helper
-    functions, classes, ``import`` modules, and any number of other top-level
-    statements alongside it.  ``transform`` is called with the file's current
-    text and must return the new text; the result is written back and a
-    **unified diff of the change is returned** so you can verify the effect
-    without a separate read-back.
-
-    *code* is base64-encoded before transport, so quotes (including
-    triple-quoted strings), backslashes, multibyte characters, and newlines
-    need no escaping — pass the program as a single ``code`` string, exactly as
-    you would write it in a ``.py`` file.
-
-    Example — uppercase every TODO marker, using a helper::
-
-        import re
-
-        def _to_upper(m):
-            return m.group(0).upper()
-
-        def transform(text):
-            return re.sub("todo", _to_upper, text, flags=re.IGNORECASE)
-
-    .. hint::
-
-       For a single known string replacement prefer :func:`write_file_sandbox`
-       with ``old_str``.  Reach for ``transform_file`` when the edit is better
-       expressed as logic than as literal text — many occurrences, a pattern,
-       or a value computed from the file.  Always check the returned ``diff``;
-       an over-broad pattern can change more than intended.
-
-    Args:
-        container_id: 12-character container ID prefix.
-        file_path: Absolute path to the file inside the container.
-        code: Python source defining a top-level ``transform(text: str) -> str``
-            (helper functions, classes, and ``import`` statements alongside it
-            are fine; only the ``transform`` callable is required).
-            Executed as a **full Python interpreter** (not a restricted DSL):
-            ``__builtins__``, ``open()``, ``import``, ``subprocess``, etc.
-            are all available inside the disposable sandbox container.
-        max_lines: Maximum diff lines to show (summary truncation).
-        offset: Line offset for paging through a large diff (0-indexed).
-        limit: Maximum diff lines per page.
-
-    Returns:
-        JSON string.  On success: ``status="ok"``, ``changed`` (bool),
-        ``diff`` (str, paginated) and diff metadata (``shown``,
-        ``total_lines``, ``truncated``, ``next_offset``, ``has_more``).
-        On failure: ``status="error"`` with ``error`` (and ``traceback`` when
-        the caller's code raised).
-
-    See also:
-        :func:`write_file_sandbox` — declarative edits (the default path).
-        :func:`read_file_range` — inspect file content before editing.
-    """
-    client = _docker()
-    try:
-        _ = client.containers.get(container_id)
-    except NotFound:
-        return json.dumps(
-            {"status": "error", "error": f"container {container_id[:12]} not found"}
-        )
-    except Exception as e:
-        return json.dumps({"status": "error", "error": str(e)})
-
-    result = transform_file_in_container(client, container_id, file_path, code)
-
-    if result.get("status") == "ok" and result.get("changed"):
-        display, meta = truncate_output(
-            result.get("diff", ""),
-            max_lines=max_lines,
-            verbose="full",
-        )
-        page = paginate_output(display, offset=offset, limit=limit)
-        return json.dumps({
-            "status": "ok",
-            "changed": True,
-            "diff": page.content,
-            "shown": meta.shown,
-            "total_lines": meta.total_lines,
-            "truncated": meta.truncated,
-            "next_offset": page.next_offset,
-            "has_more": page.has_more,
-        })
-
-    return json.dumps(result)
-
-
 def search_in_container(
     container_id: str,
     pattern: str,
@@ -182,6 +73,28 @@ def search_in_container(
 
     **Structural** mode uses ``ast-grep`` (``sg``) for AST-aware search
     that ignores whitespace/formatting differences.
+
+    .. rubric:: Use when
+
+    - Searching for text patterns across files inside the container
+    - Finding function definitions, imports, or specific code patterns
+    - AST-aware search via *structural* mode (ignores whitespace/formatting)
+
+    .. rubric:: Don't use when
+
+    - **Reading file content** — use :func:`read_file_range` instead
+    - **Listing files** — use :func:`list_files` instead
+    - **Running shell commands** — use :func:`sandbox_exec` instead
+
+    .. rubric:: Prefer over
+
+    - Prefer over ``sandbox_exec grep`` for text search (structured JSON response, language-aware fallback)
+
+    .. rubric:: Fallback
+
+    - If ripgrep/ast-grep is not installed, falls back to POSIX ``grep`` automatically
+    - For file content reading use :func:`read_file_range`
+    - For directory listing use :func:`list_files`
 
     Args:
         container_id: 12-character container ID prefix.
@@ -223,6 +136,25 @@ def lint_in_container(container_id: str, file_path: str) -> str:
     - ``.py`` → ``ruff check`` (falls back to ``pylint``)
     - ``.js``, ``.ts``, ``.jsx``, ``.tsx`` → ``eslint``
 
+    .. rubric:: Use when
+
+    - Checking code quality during the edit loop
+    - Detecting unused imports, syntax errors, and style violations
+
+    .. rubric:: Don't use when
+
+    - **Type checking** — use :func:`type_check_in_container` instead
+    - **Running tests** — use :func:`verify_in_container` instead
+
+    .. rubric:: Prefer over
+
+    - Prefer over ``sandbox_exec ruff check`` (structured JSON response)
+
+    .. rubric:: Fallback
+
+    - For type checking use :func:`type_check_in_container`
+    - For full pre-publish gate use :func:`verify_in_container`
+
     Args:
         container_id: 12-character container ID prefix.
         file_path: Path to the file inside the container.
@@ -261,6 +193,25 @@ def type_check_in_container(container_id: str, file_path: str) -> str:
     Supported:
     - ``.py`` → ``pyright``
     - ``.ts``, ``.tsx`` → ``tsc --noEmit``
+
+    .. rubric:: Use when
+
+    - Checking type correctness during the edit loop
+    - Catching type errors before running tests
+
+    .. rubric:: Don't use when
+
+    - **Lint checking** — use :func:`lint_in_container` instead
+    - **Running tests** — use :func:`verify_in_container` instead
+
+    .. rubric:: Prefer over
+
+    - Prefer over ``sandbox_exec pyright`` (structured JSON response)
+
+    .. rubric:: Fallback
+
+    - For lint checking use :func:`lint_in_container`
+    - For full pre-publish gate use :func:`verify_in_container`
 
     Args:
         container_id: 12-character container ID prefix.
@@ -321,6 +272,29 @@ def verify_in_container(
        diff summary but as a **push plan** (branch, message, PR info)
        without test results — they are complementary views of the
        same pending change.
+
+    .. rubric:: Use when
+
+    - **Pre-publish test gate** — run as the final step before calling :func:`publish`
+    - Running the **full test suite** after making changes
+    - Running **filtered tests first** (via *test_filter*), then auto-fallback to the full suite
+
+    .. rubric:: Don't use when
+
+    - **Lint checking** — use :func:`lint_in_container` during the edit loop instead
+    - **Type checking** — use :func:`type_check_in_container` during the edit loop instead
+    - **Single specific test file only** — use ``sandbox_exec`` + ``python -m pytest`` instead (see refactoring rules)
+    - **Running non-Python tests** — use ``sandbox_exec`` with the appropriate test runner
+
+    .. rubric:: Prefer over
+
+    - Prefer over individual ``python -m pytest`` calls for the final pre-publish gate
+    - Prefer over manual ``git diff --stat`` — the diff summary is included automatically
+
+    .. rubric:: Fallback
+
+    - If pytest is not available in the container, use ``sandbox_exec`` with the appropriate test runner
+    - For lint/type-check during editing, use :func:`lint_in_container` / :func:`type_check_in_container`
 
     Args:
         container_id: 12-character container ID prefix.
