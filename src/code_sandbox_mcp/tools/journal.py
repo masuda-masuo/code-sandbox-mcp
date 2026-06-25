@@ -35,7 +35,7 @@ def sandbox_read_journal(
 
 def sandbox_trace(
     run_id: str,
-    format: str = "json",
+    output_format: str = "json",
 ) -> str:
     """Generate a replay trace for a specific run.
 
@@ -44,17 +44,17 @@ def sandbox_trace(
 
     Args:
         run_id: The run identifier to generate a trace for.
-        format: Output format - ``"json"`` or ``"html"``
+        output_format: Output format - ``"json"`` or ``"html"``
             (default ``"json"``).
 
     Returns:
         Path to the generated trace file, or an error message
         beginning with ``"Error:"``.
     """
-    if format not in ("json", "html"):
+    if output_format not in ("json", "html"):
         return "Error: format must be 'json' or 'html'"
 
-    if format == "json":
+    if output_format == "json":
         path = generate_json_trace(run_id)
     else:
         path = generate_html_trace(run_id)
