@@ -314,6 +314,14 @@ def verify_in_container(
     Returns a diff summary (``git diff --stat``) so the LLM can
     present changes to the user before calling :func:`publish`.
 
+    .. note::
+
+       This diff summary includes **test outcomes** (gate_passed,
+       test counts).  :func:`publish`'s ``dry_run`` also returns a
+       diff summary but as a **push plan** (branch, message, PR info)
+       without test results — they are complementary views of the
+       same pending change.
+
     Args:
         container_id: 12-character container ID prefix.
         path: File or directory path inside the container (e.g.

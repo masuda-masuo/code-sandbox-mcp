@@ -602,14 +602,21 @@ The **single exit tool** (design doc `docs/design.md` section 11.1).
 Internally holds two push transports: ``git push`` with credential
 helper, and GitHub Objects API (blob->tree->commit->ref) as
 automatic fallback.  The transport choice is transparent to the
-caller -- verify gate is not run by publish — run :func:`verify_in_container` first.
+caller.
+
+.. important::
+
+   ``publish`` does **not** run verification — the design assumes the
+   LLM calls :func:`verify_in_container` before ``publish`` as part of
+   the **edit → verify → publish** workflow (see ``AGENTS.md``).
 
 Two-step flow for boundary-crossing writes:
 
 1. ``dry_run=True`` -- returns a diff summary and a confirmation
-   token that must be approved before execution.
-2. ``dry_run=False`` + *token* -- verifies the token, runs
-   ``verify_in_container`` results, stages/commits/pushes
+   token that must be approved before execution.  (The dry-run diff
+   summary shows the push plan; :func:`verify_in_container`'s diff
+   summary includes test results.)
+2. ``dry_run=False`` + *token* -- verifies the token, stages/commits/pushes
    (and creates a PR if *create_pr* is ``True``).
 
 Requires a container started with ``allow_network=True`` and

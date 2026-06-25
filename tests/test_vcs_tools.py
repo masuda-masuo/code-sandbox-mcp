@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 from code_sandbox_mcp.tools.vcs import (
     checkpoint,
