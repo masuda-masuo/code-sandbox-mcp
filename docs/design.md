@@ -145,7 +145,7 @@
 編集は「新バイト列を*渡す*」か「*計算するコードを渡す*」かの直交2本に集約する（§0 affordance の非増殖原則）。
 
 - **宣言的 = `write_file_sandbox`**（上記コア）: 新テキストが既知のとき。点編集の主役。
-- **命令的 = `transform_file`**: 新バイト列をコードで計算するとき（regex 一括 / 構造書換 / 計算的編集 / 機械生成 diff の `git apply`）。`code` は**単一トップレベル文字列**で受け内部 base64 化（multibyte/改行のエスケープ問題を構造的に回避）、**結果 diff を返す**ことで read-modify-write-verify を一体化（サイレント破壊の可視化）。
+- **命令的 = `transform_file`**: 新バイト列をコードで計算するとき（regex 一括 / 構造書換 / 計算的編集 / 機械生成 diff の `git apply`）。`code` は**単一トップレベル文字列**で受け内部 base64 化（multibyte/改行のエスケープ問題を構造的に回避）、**結果 diff を返す**ことで read-modify-write-verify を一体化（サイレント破壊の可視化）。#268 で `verify.py` から `file.py` へ移管、ファイル編集ツール群との統合を反映。
 - **`apply_patch` は削除済み**: かつて「主役」と位置づけたが誤り。LLM 手書き unified diff は失敗率が高く、失敗時の往復で**トークン経済が反転する**。「フルファイル送信比で1〜2桁削減」は baseline が誤りで、真の競合は `old_str`（そこに対しペイロード優位はほぼ無く、コンテキスト行ぶん出力が増えることすらある）。`apply_patch` は `mcp.tool()` 登録を削除済み（#259）。機械生成 diff の適用は `transform_file` の `git apply` 経路を使用する。
 
 **二次（需要が出てから）**

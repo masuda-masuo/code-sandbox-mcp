@@ -220,4 +220,5 @@ __marimo__/
 # opencode CLI configuration
 opencode.jsonc
 .opencode/
+AGENTS.md
 CLAUDE.md
