@@ -1,32 +1,12 @@
 """Tests for sandbox_create_pr (Issue #152, dry_run flow Issue #169)."""
 from __future__ import annotations
 
-import asyncio
-import inspect
 import json
 from unittest.mock import MagicMock, patch
 
+from tests.conftest import _make_container_mock, _make_client_mock, _decode
+
 from code_sandbox_mcp.tools.vcs import sandbox_create_pr
-
-
-def _make_container_mock(exec_returns: list[tuple[int, bytes, bytes]]):
-    container = MagicMock()
-    container.exec_run.side_effect = [
-        (ec, (stdout, stderr)) for ec, stdout, stderr in exec_returns
-    ]
-    return container
-
-
-def _make_client_mock(container: MagicMock):
-    client = MagicMock()
-    client.containers.get.return_value = container
-    return client
-
-
-def _decode(result):
-    if inspect.iscoroutine(result):
-        result = asyncio.run(result)
-    return json.loads(result)
 
 
 class TestSandboxCreatePr:
