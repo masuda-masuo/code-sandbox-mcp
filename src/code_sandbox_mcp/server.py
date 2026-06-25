@@ -16,9 +16,6 @@ from fastmcp import FastMCP
 
 from code_sandbox_mcp.github_auth import setup_github_app_token
 from code_sandbox_mcp.journal import (
-    get_journal_path,
-    get_runs,
-    read_journal,
     record_boundary_crossing,
 )
 from code_sandbox_mcp.result_cache import (
@@ -32,11 +29,6 @@ from code_sandbox_mcp.token import (
     get_pending_tokens,
     reject_token,
     verify_token,
-)
-from code_sandbox_mcp.trace import (
-    generate_html_trace,
-    generate_json_trace,
-    get_trace_dir,
 )
 
 from .tools.container import (
@@ -61,6 +53,13 @@ from .tools.file import (
     read_file_range,
     transform_file,
     write_file_sandbox,
+)
+from .tools.journal import (
+    sandbox_journal_path,
+    sandbox_list_runs,
+    sandbox_read_journal,
+    sandbox_trace,
+    sandbox_trace_dir,
 )
 from .tools.vcs import (
     checkpoint,
@@ -120,6 +119,13 @@ lint_in_container = mcp.tool()(lint_in_container)
 type_check_in_container = mcp.tool()(type_check_in_container)
 verify_in_container = mcp.tool()(verify_in_container)
 
+# Journal / trace tool registrations
+sandbox_read_journal = mcp.tool()(sandbox_read_journal)
+sandbox_trace = mcp.tool()(sandbox_trace)
+sandbox_list_runs = mcp.tool()(sandbox_list_runs)
+sandbox_journal_path = mcp.tool()(sandbox_journal_path)
+sandbox_trace_dir = mcp.tool()(sandbox_trace_dir)
+
 
 @mcp.tool()
 def sandbox_cache_stats() -> str:
@@ -149,97 +155,6 @@ def sandbox_cache_invalidate(key: str | None = None) -> str:
 
 
 
-@mcp.tool()
-def sandbox_read_journal(
-    run_id: str | None = None,
-    max_entries: int = 100,
-) -> str:
-    """Read the append-only execution journal.
-
-    Returns JSON array of journal entries, optionally filtered by
-    *run_id*.  The journal records every container lifecycle event
-    (initialize, exec, stop) and boundary-crossing operation.
-
-    Args:
-        run_id: If provided, only return entries for this run.
-            Omit to see all journal entries.
-        max_entries: Maximum number of entries to return
-            (most recent first, default 100).
-
-    Returns:
-        JSON string with a list of journal entry objects, each
-        containing ``ts``, ``run_id``, ``container_id``,
-        ``operation``, and operation-specific fields.
-    """
-    entries = read_journal(run_id=run_id, max_entries=max_entries)
-    return json.dumps(entries, ensure_ascii=False)
-
-
-@mcp.tool()
-def sandbox_trace(
-    run_id: str,
-    format: str = "json",
-) -> str:
-    """Generate a replay trace for a specific run.
-
-    Creates an HTML or JSON trace file from journal entries for
-    *run_id*, enabling post-hoc review of "why did it do that?".
-
-    Args:
-        run_id: The run identifier to generate a trace for.
-        format: Output format - ``"json"`` or ``"html"``
-            (default ``"json"``).
-
-    Returns:
-        Path to the generated trace file, or an error message
-        beginning with ``"Error:"``.
-    """
-    if format not in ("json", "html"):
-        return "Error: format must be 'json' or 'html'"
-
-    if format == "json":
-        path = generate_json_trace(run_id)
-    else:
-        path = generate_html_trace(run_id)
-
-    if not path:
-        return f"Error: run_id {run_id} not found in journal"
-    return path
-
-
-@mcp.tool()
-def sandbox_list_runs() -> str:
-    """List all runs recorded in the execution journal.
-
-    Returns a JSON array of run summaries, each with ``run_id``,
-    ``started``, ``image``, ``operations``, ``boundary_crossings``,
-    ``status``, and ``last_ts``.
-
-    Returns:
-        JSON string with a list of run summary objects.
-    """
-    runs = get_runs()
-    return json.dumps(runs, ensure_ascii=False)
-
-
-@mcp.tool()
-def sandbox_journal_path() -> str:
-    """Return the filesystem path to the execution journal file.
-
-    Returns:
-        Absolute path to ``~/.code-sandbox-mcp/journal.log``.
-    """
-    return get_journal_path()
-
-
-@mcp.tool()
-def sandbox_trace_dir() -> str:
-    """Return the filesystem path to the trace output directory.
-
-    Returns:
-        Absolute path to ``~/.code-sandbox-mcp/traces/``.
-    """
-    return get_trace_dir()
 
 
 @mcp.tool()
