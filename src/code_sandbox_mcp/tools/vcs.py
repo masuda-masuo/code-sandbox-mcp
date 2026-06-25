@@ -53,7 +53,7 @@ def _gh_api(method, path, body):
             text=True,
         )
         if r.returncode != 0:
-            raise RuntimeError(r.stderr or r.stdout)
+            raise RuntimeError(r.stderr or r.stdout or f"(exit code {r.returncode}, no output)")
         return json.loads(r.stdout)
     finally:
         os.unlink(tmpfile)
