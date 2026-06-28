@@ -268,17 +268,29 @@ def verify_in_container(
     pytest_args: str | None = None,
     language: str | None = None,
     working_dir: str | None = None,
+    skip_lint_gate: bool = False,
+    skip_type_gate: bool = False,
 ) -> str:
     """Run pytest with optional filter → full-suite fallback and diff summary.
 
-    **Use this as the pre-publish test gate.**  When *test_filter* or
+    **Use this as the pre-publish quality gate.**  It runs lint and
+    type-checking on the project source (mirroring CI's ``ruff check``)
+    as a **precondition**, then the test suite -- a forgotten lint can no
+    longer slip through to CI (Issue #293).  When *test_filter* or
     *pytest_args* is provided, the filtered tests run first; if they
     pass, the full test suite runs automatically.  The gate decision is
     always based on the full suite result.
 
-    Lint and type-checking should be done separately with
-    :func:`lint_in_container` and :func:`type_check_in_container`
-    during the edit loop.
+    The lint/type gate runs on the project ``src/`` scope (or ``.`` when
+    there is no ``src/``), independent of the test *path*, so it catches
+    project-wide issues regardless of which tests are selected.  If lint
+    or type-checking fails, the tests are **not** run and
+    ``gate_passed=false`` is returned with the findings.  Missing tools
+    (e.g. the lint/type-free ``:minimal`` image) set
+    ``lint_type_incomplete`` rather than failing the gate.
+
+    :func:`lint_in_container` / :func:`type_check_in_container` remain
+    available as standalone single-file checks during the edit loop.
 
     Returns a diff summary (``git diff --stat``) so the LLM can
     present changes to the user before calling :func:`publish`.
@@ -299,8 +311,7 @@ def verify_in_container(
 
     .. rubric:: Don't use when
 
-    - **Lint checking** — use :func:`lint_in_container` during the edit loop instead
-    - **Type checking** — use :func:`type_check_in_container` during the edit loop instead
+    - **A single-file lint/type check during editing** — use :func:`lint_in_container` / :func:`type_check_in_container` (verify runs the project-wide gate)
     - **Single specific test file only** — use ``sandbox_exec`` + ``python -m pytest`` instead (see refactoring rules)
     - **Running non-Python tests** — use ``sandbox_exec`` with the appropriate test runner
 
@@ -332,11 +343,23 @@ def verify_in_container(
         working_dir: Working directory inside the container for test
             execution.  When ``None``, tests run from the container's
             default directory (``/home/sandbox``).
+        skip_lint_gate: Skip the lint precondition (default ``False``).
+            Use during the edit loop for faster focused-test feedback
+            when lint is known clean; leave ``False`` on the final
+            pre-publish call so the gate is enforced.
+        skip_type_gate: Skip the type-check precondition (default
+            ``False``).  Same edit-loop fast-path rationale as
+            *skip_lint_gate*.
 
     Returns:
         JSON string with:
 
-        * ``gate_passed``: ``True`` if full test suite passed
+        * ``gate_passed``: ``True`` if the lint + type gate passed and
+          the full test suite passed
+        * ``lint``: lint findings from the pre-test gate (flat list)
+        * ``types``: type-check findings from the pre-test gate (flat list)
+        * ``lint_type_incomplete`` (optional): ``True`` when a lint/type
+          tool was unavailable or errored
         * ``partial_test_run``: ``True`` when only filtered tests ran
           (filtered failed, full was never executed)
         * ``detected_languages``: list of detected language keys
@@ -349,6 +372,7 @@ def verify_in_container(
     from code_sandbox_mcp.edit_verify import (
         _SANDBOX_ENV,
         detect_languages,
+        run_lint_type_gate,
     )
 
     client = _docker()
@@ -414,6 +438,37 @@ def verify_in_container(
     }
     if detected.reason:
         result["detection_warning"] = detected.reason
+
+    # --- Pre-test lint + type gate (Issue #293) ---
+    # Lint/type run on the project source scope (mirroring CI's
+    # ``ruff check src/``), independent of the test ``path``.  This makes
+    # verify a single quality gate so a forgotten lint can no longer slip
+    # through to CI; both must pass before the test suite runs.  The
+    # skip_* flags let the edit loop get faster focused-test feedback when
+    # lint/type are known clean -- the gate is still enforced on the final
+    # pre-publish call where the flags are left at their default (False).
+    if not (skip_lint_gate and skip_type_gate):
+        src_ec, _, _ = _run("test -d src")
+        gate_scope = "src" if src_ec == 0 else "."
+        lt_gate = run_lint_type_gate(
+            container,
+            gate_scope,
+            working_dir=working_dir,
+            language=language,
+            gate_on_lint=not skip_lint_gate,
+            gate_on_type=not skip_type_gate,
+        )
+        result["lint"] = lt_gate["lint"]
+        result["types"] = lt_gate["types"]
+        if lt_gate["incomplete"]:
+            result["lint_type_incomplete"] = True
+        if not lt_gate["gate_passed"]:
+            result["gate_fail_reasons"] = lt_gate["gate_fail_reasons"]
+            result["tests"] = {
+                "status": "skipped",
+                "message": "lint/type gate failed; tests not run",
+            }
+            return json.dumps(result)
 
     # --- Run pytest ---
     def _run_pytest(filter_args: str) -> dict:
