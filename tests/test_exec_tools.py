@@ -727,7 +727,7 @@ class TestCoerceListArg:
 
     def test_run_container_and_exec_commands_coercion(self) -> None:
         """run_container_and_exec commands: JSON-stringified list is coerced."""
-        from typing import Annotated, Any
+        from typing import Annotated
         from pydantic import BeforeValidator, TypeAdapter
         from code_sandbox_mcp.tools.common import _coerce_list_arg
         ta = TypeAdapter(Annotated[list[str], BeforeValidator(_coerce_list_arg)] | None)
