@@ -6,11 +6,11 @@ import json
 
 from src.code_sandbox_mcp.edit_verify import (
     _determine_lint_severity,
+    _determine_scope,
     _parse_eslint_output,
     _parse_pylint_output,
     _parse_ruff_output,
     _parse_semgrep_output,
-    _resolve_workdir,
 )
 
 # ===================================================================
@@ -388,33 +388,37 @@ class TestRuffSecurityRules:
 
 
 # ===================================================================
-# _resolve_workdir tests
+# _determine_scope tests
 # ===================================================================
 
 
-class TestResolveWorkdir:
-    """Tests for project root derivation from file paths."""
+class TestDetermineScope:
+    """Tests for unified scope + workdir determination."""
 
     def test_src_in_absolute_path(self) -> None:
-        """/src/ in path returns the parent of src/."""
-        assert _resolve_workdir("/app/src/foo.py") == "/app"
+        """/src/ in path returns scope=src and workdir=parent of src/."""
+        assert _determine_scope("/app/src/foo.py") == ("src", "/app")
 
     def test_src_in_deep_path(self) -> None:
-        """/src/ nested deeper returns the parent of src/."""
-        assert _resolve_workdir("/home/sandbox/project/src/lib/foo.py") == "/home/sandbox/project"
+        """/src/ nested deeper returns scope=src and workdir=parent of src/."""
+        assert _determine_scope("/home/sandbox/project/src/lib/foo.py") == ("src", "/home/sandbox/project")
+
+    def test_src_at_root_absolute(self) -> None:
+        """/src/ at root (idx=0) returns scope=src and workdir='.'."""
+        assert _determine_scope("/src/foo.py") == ("src", ".")
 
     def test_src_prefix_relative(self) -> None:
-        """src/ prefix returns '.'."""
-        assert _resolve_workdir("src/foo.py") == "."
+        """src/ prefix returns scope=src and workdir='.'."""
+        assert _determine_scope("src/foo.py") == ("src", ".")
 
     def test_no_src_absolute(self) -> None:
-        """No /src/ in absolute path returns dirname."""
-        assert _resolve_workdir("/home/sandbox/lib/foo.py") == "/home/sandbox/lib"
+        """No /src/ in absolute path returns scope=dirname and workdir=dirname."""
+        assert _determine_scope("/home/sandbox/lib/foo.py") == ("/home/sandbox/lib", "/home/sandbox/lib")
 
     def test_no_src_root(self) -> None:
-        """File in root returns '.'."""
-        assert _resolve_workdir("foo.py") == "."
+        """File in root returns scope='.' and workdir='.'."""
+        assert _determine_scope("foo.py") == (".", ".")
 
     def test_no_src_relative_dir(self) -> None:
-        """Relative path with no /src/ returns the dirname."""
-        assert _resolve_workdir("lib/foo.py") == "lib"
+        """Relative path with no /src/ returns scope=dirname and workdir=dirname."""
+        assert _determine_scope("lib/foo.py") == ("lib", "lib")

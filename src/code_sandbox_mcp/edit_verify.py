@@ -27,7 +27,7 @@ import shlex
 import tarfile
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NamedTuple
 
 from code_sandbox_mcp.journal import record_file_write
 
@@ -1048,22 +1048,47 @@ _RUFF_SECURITY_IGNORE = ",".join([
     "S311",          # random — usually non-security
     "S110", "S112",  # try-except-pass / try-except-continue — style, not security
 ])
+class ScopeWorkdir(NamedTuple):
+    """``(scope, workdir)`` tuple with named field access.
+
+    Return type for :func:`_determine_scope`.
+    """
+    scope: str
+    workdir: str
 
 
-def _resolve_workdir(file_path: str) -> str:
-    """Derive the project root from *file_path* for scope check CWD.
+def _determine_scope(file_path: str) -> ScopeWorkdir:
+    """Determine the project scope and working directory for lint/type-check.
 
-    When the file lives under ``src/``, the project root is the parent of
-    the ``src/`` directory.  Otherwise returns the dirname of the file.
+    Returns a ``(scope, workdir)`` tuple:
+
+    * *scope* — path to pass to the tool (e.g. ``"src"``, ``"."``).
+    * *workdir* — project-root directory that should be the CWD when
+      running scope checks (e.g. ``"/app"``, ``"."``).
+
+    Both values are derived from *file_path* so callers no longer need
+    to call :func:`_resolve_workdir` separately.
+
+    Examples
+    --------
+    >>> _determine_scope("/app/src/foo.py")
+    ('src', '/app')
+    >>> _determine_scope("src/foo.py")
+    ('src', '.')
+    >>> _determine_scope("/home/foo.py")
+    ('/home', '/home')
+    >>> _determine_scope("foo.py")
+    ('.', '.')
     """
     normalized = file_path.replace("\\", "/")
     idx = normalized.find("/src/")
     if idx != -1:
-        return normalized[:idx]
+        return ScopeWorkdir("src", normalized[:idx] or ".")
     if normalized.startswith("src/"):
-        return "."
+        return ScopeWorkdir("src", ".")
     parent = normalized.rsplit("/", 1)[0] if "/" in normalized else ""
-    return parent or "."
+    scope = parent or "."
+    return ScopeWorkdir(scope, scope)
 
 
 def _run_ruff_verify(container: Any, path: str, workdir: str | None = None) -> VerifyResult:
@@ -1502,7 +1527,7 @@ def lint_file(
     client: Any,
     container_id: str,
     file_path: str,
-    scope: str | None = None,
+    scope_workdir: ScopeWorkdir | None = None,
 ) -> list[dict[str, Any]]:
     """Run a linter on *file_path* inside the container.
 
@@ -1513,9 +1538,10 @@ def lint_file(
     - ``rule`` (str): rule identifier (e.g. ``"F401"``, ``"unused-import"``)
     - ``message`` (str): human-readable message
 
-    When *scope* is provided and the single-file check passes (no findings),
-    the linter is also run on the full scope (e.g. ``"src"``) to catch
-    issues that only appear in project-wide checks (like I001 import ordering).
+    When *scope_workdir* (a :class:`ScopeWorkdir` from
+    :func:`_determine_scope`) is provided and the single-file check
+    passes, the linter is also run on the full scope to catch issues
+    that only appear in project-wide checks (like I001 import ordering).
 
     If no suitable linter is installed in the container, returns a
     single entry with ``rule`` set to ``"no-linter"`` and a
@@ -1534,17 +1560,17 @@ def lint_file(
 
     if ext in (".py",):
         findings = _run_python_linter(container, file_path)
-        if not findings and scope:
-            workdir = _resolve_workdir(file_path)
-            scope_r = _run_ruff_verify(container, scope, workdir=workdir)
+        if not findings and scope_workdir:
+            scope_path, workdir = scope_workdir
+            scope_r = _run_ruff_verify(container, scope_path, workdir=workdir)
             if scope_r.status not in ("not_available", "error"):
                 return scope_r.findings
         return findings
     elif ext in (".js", ".ts", ".jsx", ".tsx"):
         findings = _run_js_linter(container, file_path)
-        if not findings and scope:
-            workdir = _resolve_workdir(file_path)
-            scope_r = _run_eslint_verify(container, scope, workdir=workdir)
+        if not findings and scope_workdir:
+            scope_path, workdir = scope_workdir
+            scope_r = _run_eslint_verify(container, scope_path, workdir=workdir)
             if scope_r.status not in ("not_available", "error"):
                 return scope_r.findings
         return findings
@@ -1608,16 +1634,17 @@ def type_check_file(
     client: Any,
     container_id: str,
     file_path: str,
-    scope: str | None = None,
+    scope_workdir: ScopeWorkdir | None = None,
 ) -> list[dict[str, Any]]:
     """Run a type checker on *file_path* inside the container.
 
     Returns the same structure as :func:`lint_file`.
     If no type checker is installed, returns ``rule: "no-typechecker"``.
 
-    When *scope* is provided and the single-file check passes (no findings),
-    the type checker is also run on the full scope to catch issues that
-    only appear in project-wide checks.
+    When *scope_workdir* (a :class:`ScopeWorkdir` from
+    :func:`_determine_scope`) is provided and the single-file check
+    passes, the type checker is also run on the full scope to catch
+    issues that only appear in project-wide checks.
 
     Supported:
     - ``.py`` files -> ``pyright``
@@ -1632,17 +1659,17 @@ def type_check_file(
 
     if ext in (".py",):
         findings = _run_python_typecheck(container, file_path)
-        if not findings and scope:
-            workdir = _resolve_workdir(file_path)
-            scope_r = _run_pyright_verify(container, scope, workdir=workdir)
+        if not findings and scope_workdir:
+            scope_path, workdir = scope_workdir
+            scope_r = _run_pyright_verify(container, scope_path, workdir=workdir)
             if scope_r.status not in ("not_available", "error"):
                 return scope_r.findings
         return findings
     elif ext in (".ts", ".tsx"):
         findings = _run_ts_typecheck(container, file_path)
-        if not findings and scope:
-            workdir = _resolve_workdir(file_path)
-            scope_r = _run_tsc_verify(container, scope, workdir=workdir)
+        if not findings and scope_workdir:
+            scope_path, workdir = scope_workdir
+            scope_r = _run_tsc_verify(container, scope_path, workdir=workdir)
             if scope_r.status not in ("not_available", "error"):
                 return scope_r.findings
         return findings
