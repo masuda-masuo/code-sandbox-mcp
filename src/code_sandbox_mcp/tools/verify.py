@@ -7,6 +7,7 @@ import json
 from docker.errors import NotFound
 
 from code_sandbox_mcp.edit_verify import (
+    _determine_scope,
     _get_extension,
     apply_patch_to_file,
     lint_file,
@@ -123,18 +124,6 @@ def search_in_container(
     return json.dumps(results)
 
 
-def _determine_scope(file_path: str) -> str:
-    """Determine the project scope for full lint/type-check.
-
-    If the file is under a ``src/`` directory, returns ``"src"``
-    (matching CI's ``ruff check src/``).  Otherwise returns the
-    parent directory of the file, falling back to ``"."``.
-    """
-    normalized = file_path.replace("\\", "/")
-    if normalized.startswith("src/") or "/src/" in normalized:
-        return "src"
-    parent = normalized.rsplit("/", 1)[0] if "/" in normalized else ""
-    return parent or "."
 
 
 def lint_in_container(container_id: str, file_path: str) -> str:
@@ -202,8 +191,8 @@ def lint_in_container(container_id: str, file_path: str) -> str:
         )
 
     ext = _get_extension(file_path)
-    scope = _determine_scope(file_path) if ext in (".py", ".js", ".ts", ".jsx", ".tsx") else None
-    results = lint_file(client, container_id, file_path, scope=scope)
+    scope_workdir = _determine_scope(file_path) if ext in (".py", ".js", ".ts", ".jsx", ".tsx") else None
+    results = lint_file(client, container_id, file_path, scope_workdir=scope_workdir)
     return json.dumps(results)
 
 
@@ -266,8 +255,8 @@ def type_check_in_container(container_id: str, file_path: str) -> str:
         )
 
     ext = _get_extension(file_path)
-    scope = _determine_scope(file_path) if ext in (".py", ".ts", ".tsx") else None
-    results = type_check_file(client, container_id, file_path, scope=scope)
+    scope_workdir = _determine_scope(file_path) if ext in (".py", ".ts", ".tsx") else None
+    results = type_check_file(client, container_id, file_path, scope_workdir=scope_workdir)
     return json.dumps(results)
 
 

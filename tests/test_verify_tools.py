@@ -318,7 +318,7 @@ class TestLintInContainer:
             lint_in_container(container_id="abc123", file_path="/tmp/f.py")
         )
         assert result == [{"file": "f.py", "line": 5, "rule": "F401", "message": "unused import"}]
-        mock_impl.assert_called_once_with(mock_client, "abc123", "/tmp/f.py", scope="/tmp")
+        mock_impl.assert_called_once_with(mock_client, "abc123", "/tmp/f.py", scope_workdir=("/tmp", "/tmp"))
 
     @patch("code_sandbox_mcp.tools.verify._docker")
     @patch("code_sandbox_mcp.tools.verify.lint_file")
@@ -339,7 +339,7 @@ class TestLintInContainer:
         )
         # scope check returns findings since lint_file is mocked
         assert result == [{"file": "src/a.py", "line": 3, "rule": "I001", "message": "import order"}]
-        mock_impl.assert_called_once_with(mock_client, "abc123", "src/foo.py", scope="src")
+        mock_impl.assert_called_once_with(mock_client, "abc123", "src/foo.py", scope_workdir=("src", "."))
 
 
 # ===================================================================
@@ -392,7 +392,7 @@ class TestTypeCheckInContainer:
             type_check_in_container(container_id="abc123", file_path="/tmp/f.py")
         )
         assert result == [{"file": "f.py", "line": 10, "rule": "arg-type", "message": "incompatible type"}]
-        mock_impl.assert_called_once_with(mock_client, "abc123", "/tmp/f.py", scope="/tmp")
+        mock_impl.assert_called_once_with(mock_client, "abc123", "/tmp/f.py", scope_workdir=("/tmp", "/tmp"))
 
 
 # ===================================================================
