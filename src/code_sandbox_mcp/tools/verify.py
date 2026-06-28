@@ -325,7 +325,6 @@ def verify_in_container(
 
     from code_sandbox_mcp.edit_verify import (
         _SANDBOX_ENV,
-        _quote_path,
         detect_languages,
     )
 
