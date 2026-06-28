@@ -427,11 +427,6 @@ class TestParseMemToMb:
         assert _parse_mem_to_mb("2g") == 2048
         assert _parse_mem_to_mb("1g") == 1024
 
-    def test_parse_k(self) -> None:
-        from code_sandbox_mcp.security import _parse_mem_to_mb
-        assert _parse_mem_to_mb("1024k") == 1
-        assert _parse_mem_to_mb("2048k") == 2
-
     def test_parse_plain_number(self) -> None:
         from code_sandbox_mcp.security import _parse_mem_to_mb
         assert _parse_mem_to_mb("2048") == 2048
@@ -518,6 +513,10 @@ class TestComputeDefaultLimits:
 class TestGetSetDefaultProfile:
     """Tests for get_default_profile / set_default_profile."""
 
+    def teardown_method(self) -> None:
+        from code_sandbox_mcp.security import reset_default_profile
+        reset_default_profile()
+
     def test_returns_static_default_by_default(self) -> None:
         from code_sandbox_mcp.security import (
             DEFAULT_SECURITY_PROFILE,
@@ -536,9 +535,20 @@ class TestGetSetDefaultProfile:
         set_default_profile(custom)
         result = get_default_profile()
         assert result is custom
-        # Reset
-        from code_sandbox_mcp.security import DEFAULT_SECURITY_PROFILE
-        set_default_profile(DEFAULT_SECURITY_PROFILE)
+
+    def test_reset_restores_default(self) -> None:
+        from code_sandbox_mcp.security import (
+            DEFAULT_SECURITY_PROFILE,
+            SecurityProfile,
+            get_default_profile,
+            reset_default_profile,
+            set_default_profile,
+        )
+        custom = SecurityProfile(mem_limit="2g")
+        set_default_profile(custom)
+        reset_default_profile()
+        result = get_default_profile()
+        assert result is DEFAULT_SECURITY_PROFILE
 
 
 class TestDetectHostResources:

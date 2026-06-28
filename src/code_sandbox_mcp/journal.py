@@ -101,7 +101,7 @@ def record_initialize(
     """Record a container initialization event.
 
     Args:
-        container_id: Container ID prefix.
+        container_id: 12-character container ID prefix.
         image: Docker image used.
         allow_network: Whether network access was granted.
         inject_vcs_token: Whether VCS tokens were injected.

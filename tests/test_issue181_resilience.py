@@ -277,8 +277,7 @@ class TestSandboxInitializeResources:
 
         result = sandbox_initialize(image=_IMG, cpus=4.0)
 
-        assert result.startswith("Error: cpus")
-        assert "exceeds host CPU count" in result
+        assert result == "Error: cpus exceeds host CPU count"
         client.containers.run.assert_not_called()
 
 

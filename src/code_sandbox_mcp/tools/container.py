@@ -66,6 +66,10 @@ _SHIORI_REPOS_PATH: str | None = None
 
 _CLONE_REPO_PATTERN: re.Pattern[str] = re.compile(r"^[a-zA-Z0-9._-]+$")
 
+#: Hard cap ratio for per-call mem_limit override (Issue #201).
+#: Override values exceeding this fraction of host memory are rejected.
+_HARD_CAP_RATIO: float = 0.9
+
 _SENSITIVE_FILE_BASENAMES: frozenset[str] = frozenset(
     {
         ".env",
@@ -712,18 +716,17 @@ def sandbox_initialize(
     # Hard cap validation (Issue #201): per-call override cannot exceed
     # host resource limits.
     resource_overrides: dict[str, Any] = {}
-    HARD_CAP_RATIO = 0.9
     host_mb, host_cpus = 0, 0
     if mem_limit is not None or cpus is not None:
         host_mb, host_cpus = _detect_host_resources()
     if mem_limit is not None:
         if host_mb > 0:
             requested_mb = _parse_mem_to_mb(mem_limit)
-            cap_mb = int(host_mb * HARD_CAP_RATIO)
+            cap_mb = int(host_mb * _HARD_CAP_RATIO)
             if requested_mb > cap_mb:
                 return (
                     f"Error: mem_limit {mem_limit} exceeds host cap "
-                    f"({cap_mb}m = {HARD_CAP_RATIO:.0%} of {host_mb}m)"
+                    f"({_HARD_CAP_RATIO:.0%} of host memory)"
                 )
         resource_overrides["mem_limit"] = mem_limit
         resource_overrides["memswap_limit"] = mem_limit
@@ -731,7 +734,7 @@ def sandbox_initialize(
         if cpus <= 0:
             return "Error: cpus must be > 0"
         if host_cpus and cpus > host_cpus:
-            return f"Error: cpus {cpus} exceeds host CPU count ({host_cpus})"
+            return "Error: cpus exceeds host CPU count"
         resource_overrides["cpu_quota"] = int(cpus * profile.cpu_period)
 
     run_kwargs = build_secure_run_kwargs(
