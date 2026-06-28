@@ -63,6 +63,9 @@ from .tools.journal import (
     sandbox_trace,
     sandbox_trace_dir,
 )
+from .tools.package import (
+    package_install,
+)
 from .tools.vcs import (
     checkpoint,
     checkpoint_list,
@@ -113,6 +116,9 @@ copy_file = mcp.tool()(copy_file)
 read_file_range = mcp.tool()(read_file_range)
 list_files = mcp.tool()(list_files)
 
+
+# Package install tool registration
+package_install = mcp.tool()(package_install)
 
 # Verify tool registrations
 transform_file = mcp.tool()(transform_file)
