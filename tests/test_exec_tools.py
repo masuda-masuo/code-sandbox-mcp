@@ -676,12 +676,6 @@ class TestCoerceListArg:
     list so pydantic validation succeeds.
     """
 
-    from typing import Annotated
-
-    from pydantic import BeforeValidator, TypeAdapter
-
-    from code_sandbox_mcp.tools.exec import _coerce_list_arg
-
     def _ta(self) -> "TypeAdapter[list[str]]":
         from typing import Annotated
         from pydantic import BeforeValidator, TypeAdapter
