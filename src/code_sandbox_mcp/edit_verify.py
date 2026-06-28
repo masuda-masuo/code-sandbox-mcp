@@ -1096,6 +1096,7 @@ def _run_ruff_verify(
     path: str,
     workdir: str | None = None,
     extra_select: bool = True,
+    fix: bool = False,
 ) -> VerifyResult:
     """Run ruff on *path*.  Returns VerifyResult envelope.
 
@@ -1105,6 +1106,11 @@ def _run_ruff_verify(
     with the project config **only** -- this mirrors CI's plain
     ``ruff check`` exactly and is what the pre-test gate uses, so the
     gate never diverges from CI on rules the project hasn't opted into.
+
+    When *fix* is ``True`` ruff is invoked with ``--fix`` so it applies
+    its safe autofixes (import sorting, unused-import removal, etc.) to
+    *path* in place; the returned findings are the violations that
+    remain *after* fixing (Issue #284).
     """
     # _quote_path uses shlex.quote (single-quote wrapping), so paths with
     # spaces or special characters are safe. SELECT/IGNORE are comma-separated
@@ -1115,11 +1121,13 @@ def _run_ruff_verify(
         if extra_select
         else ""
     )
+    fix_arg = "--fix " if fix else ""
     ec, output = container.exec_run(
         [
             "/bin/sh",
             "-c",
             f"{_SANDBOX_ENV}ruff check --output-format json "
+            f"{fix_arg}"
             f"{security_args}"
             f"{_quote_path(path)}",
         ],
@@ -1142,13 +1150,21 @@ def _run_ruff_verify(
     return _envelope_ok("ruff", findings, ec)
 
 
-def _run_eslint_verify(container: Any, path: str, workdir: str | None = None) -> VerifyResult:
-    """Run eslint on *path*.  Returns VerifyResult envelope."""
+def _run_eslint_verify(
+    container: Any, path: str, workdir: str | None = None, fix: bool = False
+) -> VerifyResult:
+    """Run eslint on *path*.  Returns VerifyResult envelope.
+
+    When *fix* is ``True`` eslint is invoked with ``--fix`` so it
+    rewrites *path* in place; the returned findings are the problems
+    that remain *after* fixing (Issue #284).
+    """
+    fix_arg = "--fix " if fix else ""
     ec, output = container.exec_run(
         [
             "/bin/sh",
             "-c",
-            f"{_SANDBOX_ENV}eslint --format json {_quote_path(path)}",
+            f"{_SANDBOX_ENV}eslint {fix_arg}--format json {_quote_path(path)}",
         ],
         stdout=True,
         stderr=True,
@@ -1546,6 +1562,7 @@ def lint_file(
     container_id: str,
     file_path: str,
     scope_workdir: ScopeWorkdir | None = None,
+    fix: bool = False,
 ) -> list[dict[str, Any]]:
     """Run a linter on *file_path* inside the container.
 
@@ -1560,6 +1577,13 @@ def lint_file(
     :func:`_determine_scope`) is provided and the single-file check
     passes, the linter is also run on the full scope to catch issues
     that only appear in project-wide checks (like I001 import ordering).
+
+    When *fix* is ``True`` the linter applies its safe autofixes
+    (``ruff check --fix`` / ``eslint --fix``) to *file_path* in place,
+    and the returned findings are the violations that remain *after*
+    fixing (Issue #284).  The autofix is scoped to *file_path* only;
+    the project-wide ``scope_workdir`` phase always stays read-only so
+    a single-file fix never mutates unrelated files.
 
     If no suitable linter is installed in the container, returns a
     single entry with ``rule`` set to ``"no-linter"`` and a
@@ -1577,18 +1601,22 @@ def lint_file(
     ext = _get_extension(file_path)
 
     if ext in (".py",):
-        findings = _run_python_linter(container, file_path)
+        findings = _run_python_linter(container, file_path, fix=fix)
         if not findings and scope_workdir:
             scope_path, workdir = scope_workdir
-            scope_r = _run_ruff_verify(container, scope_path, workdir=workdir)
+            # Scope phase is always read-only: a single-file fix must
+            # never mutate the project-wide scope (Issue #284).
+            scope_r = _run_ruff_verify(container, scope_path, workdir=workdir, fix=False)
             if scope_r.status not in ("not_available", "error"):
                 return scope_r.findings
         return findings
     elif ext in (".js", ".ts", ".jsx", ".tsx"):
-        findings = _run_js_linter(container, file_path)
+        findings = _run_js_linter(container, file_path, fix=fix)
         if not findings and scope_workdir:
             scope_path, workdir = scope_workdir
-            scope_r = _run_eslint_verify(container, scope_path, workdir=workdir)
+            # Scope phase is always read-only: a single-file fix must
+            # never mutate the project-wide scope (Issue #284).
+            scope_r = _run_eslint_verify(container, scope_path, workdir=workdir, fix=False)
             if scope_r.status not in ("not_available", "error"):
                 return scope_r.findings
         return findings
@@ -1603,13 +1631,20 @@ def lint_file(
         ]
 
 
-def _run_python_linter(container: Any, file_path: str) -> list[dict[str, Any]]:
-    """Try ruff, fall back to pylint. Report tool absence clearly."""
-    result = _run_ruff_verify(container, file_path)
+def _run_python_linter(
+    container: Any, file_path: str, fix: bool = False
+) -> list[dict[str, Any]]:
+    """Try ruff, fall back to pylint. Report tool absence clearly.
+
+    When *fix* is ``True`` ruff applies its safe autofixes to
+    *file_path* in place (Issue #284).  The pylint fallback has no
+    autofix capability, so *fix* is a no-op on that path.
+    """
+    result = _run_ruff_verify(container, file_path, fix=fix)
     if result.status not in ("not_available", "error"):
         return result.findings
 
-    # ruff not available, try pylint
+    # ruff not available, try pylint (no autofix support)
     pylint_result = _run_pylint(container, file_path)
     if pylint_result is not None:
         return pylint_result
@@ -1628,9 +1663,15 @@ def _run_python_linter(container: Any, file_path: str) -> list[dict[str, Any]]:
     ]
 
 
-def _run_js_linter(container: Any, file_path: str) -> list[dict[str, Any]]:
-    """Try eslint."""
-    result = _run_eslint_verify(container, file_path)
+def _run_js_linter(
+    container: Any, file_path: str, fix: bool = False
+) -> list[dict[str, Any]]:
+    """Try eslint.
+
+    When *fix* is ``True`` eslint applies ``--fix`` autofixes to
+    *file_path* in place (Issue #284).
+    """
+    result = _run_eslint_verify(container, file_path, fix=fix)
     if result.status not in ("not_available", "error"):
         return result.findings
 

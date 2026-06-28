@@ -318,7 +318,9 @@ class TestLintInContainer:
             lint_in_container(container_id="abc123", file_path="/tmp/f.py")
         )
         assert result == [{"file": "f.py", "line": 5, "rule": "F401", "message": "unused import"}]
-        mock_impl.assert_called_once_with(mock_client, "abc123", "/tmp/f.py", scope_workdir=("/tmp", "/tmp"))
+        mock_impl.assert_called_once_with(
+            mock_client, "abc123", "/tmp/f.py", scope_workdir=("/tmp", "/tmp"), fix=False
+        )
 
     @patch("code_sandbox_mcp.tools.verify._docker")
     @patch("code_sandbox_mcp.tools.verify.lint_file")
@@ -339,7 +341,113 @@ class TestLintInContainer:
         )
         # scope check returns findings since lint_file is mocked
         assert result == [{"file": "src/a.py", "line": 3, "rule": "I001", "message": "import order"}]
-        mock_impl.assert_called_once_with(mock_client, "abc123", "src/foo.py", scope_workdir=("src", "."))
+        mock_impl.assert_called_once_with(
+            mock_client, "abc123", "src/foo.py", scope_workdir=("src", "."), fix=False
+        )
+
+    @patch("code_sandbox_mcp.tools.verify._docker")
+    @patch("code_sandbox_mcp.tools.verify.lint_file")
+    def test_fix_true_propagates_to_lint_file(
+        self,
+        mock_impl: MagicMock,
+        mock_docker: MagicMock,
+    ) -> None:
+        """fix=True is forwarded to lint_file (Issue #284)."""
+        mock_container = MagicMock()
+        mock_client = MagicMock()
+        mock_client.containers.get.return_value = mock_container
+        mock_docker.return_value = mock_client
+        mock_impl.return_value = []
+
+        result = json.loads(
+            lint_in_container(container_id="abc123", file_path="/tmp/f.py", fix=True)
+        )
+        assert result == []
+        mock_impl.assert_called_once_with(
+            mock_client, "abc123", "/tmp/f.py", scope_workdir=("/tmp", "/tmp"), fix=True
+        )
+
+
+# ===================================================================
+# lint_file autofix (Issue #284) — edit_verify layer
+# ===================================================================
+
+
+class TestLintFileAutofix:
+    """The fix flag must reach the ruff/eslint command (Issue #284)."""
+
+    @staticmethod
+    def _exec_cmd(mock_container: MagicMock) -> str:
+        """Return the shell command string from the last exec_run call."""
+        args, _kwargs = mock_container.exec_run.call_args
+        argv = args[0]
+        # argv is ["/bin/sh", "-c", "<command>"]
+        return argv[2]
+
+    def _client_with(self, mock_container: MagicMock) -> MagicMock:
+        mock_client = MagicMock()
+        mock_client.containers.get.return_value = mock_container
+        return mock_client
+
+    def test_ruff_fix_adds_fix_flag(self) -> None:
+        from code_sandbox_mcp.edit_verify import lint_file
+
+        mock_container = MagicMock()
+        mock_container.exec_run.return_value = (0, (b"[]", b""))
+        client = self._client_with(mock_container)
+
+        result = lint_file(client, "abc123", "/tmp/f.py", fix=True)
+
+        assert result == []
+        cmd = self._exec_cmd(mock_container)
+        assert "ruff check" in cmd
+        assert "--fix" in cmd
+
+    def test_ruff_no_fix_omits_fix_flag(self) -> None:
+        from code_sandbox_mcp.edit_verify import lint_file
+
+        mock_container = MagicMock()
+        mock_container.exec_run.return_value = (0, (b"[]", b""))
+        client = self._client_with(mock_container)
+
+        lint_file(client, "abc123", "/tmp/f.py", fix=False)
+
+        cmd = self._exec_cmd(mock_container)
+        assert "ruff check" in cmd
+        assert "--fix" not in cmd
+
+    def test_eslint_fix_adds_fix_flag(self) -> None:
+        from code_sandbox_mcp.edit_verify import lint_file
+
+        mock_container = MagicMock()
+        mock_container.exec_run.return_value = (0, (b"[]", b""))
+        client = self._client_with(mock_container)
+
+        lint_file(client, "abc123", "/tmp/app.ts", fix=True)
+
+        cmd = self._exec_cmd(mock_container)
+        assert "eslint" in cmd
+        assert "--fix" in cmd
+
+    def test_scope_phase_stays_read_only_when_fixing(self) -> None:
+        """Single-file fix must not pass --fix to the project-wide scope run."""
+        from code_sandbox_mcp.edit_verify import lint_file
+
+        mock_container = MagicMock()
+        # First call (single file) → clean, triggers scope phase.
+        mock_container.exec_run.return_value = (0, (b"[]", b""))
+        client = self._client_with(mock_container)
+
+        lint_file(
+            client, "abc123", "src/foo.py", scope_workdir=("src", "."), fix=True
+        )
+
+        # Two exec_run calls: single-file (with --fix) then scope (read-only).
+        assert mock_container.exec_run.call_count == 2
+        single_cmd = mock_container.exec_run.call_args_list[0][0][0][2]
+        scope_cmd = mock_container.exec_run.call_args_list[1][0][0][2]
+        assert "--fix" in single_cmd
+        assert "--fix" not in scope_cmd
 
 
 # ===================================================================

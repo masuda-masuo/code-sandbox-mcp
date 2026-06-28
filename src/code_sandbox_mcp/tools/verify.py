@@ -126,7 +126,7 @@ def search_in_container(
 
 
 
-def lint_in_container(container_id: str, file_path: str) -> str:
+def lint_in_container(container_id: str, file_path: str, fix: bool = False) -> str:
     """Run a linter on *file_path* inside the container.
 
     Detects the file type from its extension and chooses an appropriate
@@ -141,14 +141,25 @@ def lint_in_container(container_id: str, file_path: str) -> str:
     (e.g. ``"src/"``) to catch issues that only appear in project-wide
     checks (like I001 import ordering).
 
+    **Autofix** (*fix=True*): the linter applies its safe autofixes
+    (``ruff check --fix`` / ``eslint --fix``) to *file_path* in place
+    and returns the violations that remain *after* fixing (Issue #284).
+    This removes the need to drop to ``sandbox_exec ruff check --fix``
+    during the edit loop.  The autofix is scoped to *file_path* only —
+    the project-wide scope phase stays read-only, so a single-file fix
+    never mutates unrelated files.  Inspect the returned findings (and,
+    if needed, the file diff via :func:`verify_in_container`) to see
+    what could not be fixed automatically.
+
     Supported:
-    - ``.py`` → ``ruff check`` (falls back to ``pylint``)
+    - ``.py`` → ``ruff check`` (falls back to ``pylint``; pylint has no autofix)
     - ``.js``, ``.ts``, ``.jsx``, ``.tsx`` → ``eslint``
 
     .. rubric:: Use when
 
     - Checking code quality during the edit loop
     - Detecting unused imports, syntax errors, and style violations
+    - **Auto-fixing** import ordering / unused imports / style (pass ``fix=True``)
 
     .. rubric:: Don't use when
 
@@ -158,6 +169,7 @@ def lint_in_container(container_id: str, file_path: str) -> str:
     .. rubric:: Prefer over
 
     - Prefer over ``sandbox_exec ruff check`` (structured JSON response)
+    - Prefer ``fix=True`` over ``sandbox_exec ruff check --fix`` for autofixes
 
     .. rubric:: Fallback
 
@@ -167,9 +179,12 @@ def lint_in_container(container_id: str, file_path: str) -> str:
     Args:
         container_id: 12-character container ID prefix.
         file_path: Path to the file inside the container.
+        fix: When ``True``, apply the linter's safe autofixes to
+            *file_path* in place before reporting (default ``False``).
 
     Returns:
-        JSON string of lint findings, or an error message.
+        JSON string of lint findings (the violations remaining after
+        any autofix), or an error message.
     """
     client = _docker()
     try:
@@ -192,7 +207,9 @@ def lint_in_container(container_id: str, file_path: str) -> str:
 
     ext = _get_extension(file_path)
     scope_workdir = _determine_scope(file_path) if ext in (".py", ".js", ".ts", ".jsx", ".tsx") else None
-    results = lint_file(client, container_id, file_path, scope_workdir=scope_workdir)
+    results = lint_file(
+        client, container_id, file_path, scope_workdir=scope_workdir, fix=fix
+    )
     return json.dumps(results)
 
 
