@@ -30,6 +30,94 @@ _BRANCH_RE = re.compile(
 
 
 # ---------------------------------------------------------------------------
+# Git root auto-detection
+# ---------------------------------------------------------------------------
+
+_DEFAULT_WD = "/home/sandbox"
+
+
+def resolve_git_root(
+    container: Any,
+    working_dir: str = _DEFAULT_WD,
+) -> str:
+    """Auto-detect git repository root when working_dir is the default.
+
+    When *working_dir* is explicitly set (not ``/home/sandbox``),
+    return it unchanged.  When it is the default, try to locate the
+    actual git repository root by:
+
+    0. Reading ``~/.sandbox-meta.json`` (written by
+       :func:`sandbox_initialize` after a successful clone)
+    1. Testing ``/home/sandbox`` with ``git rev-parse --show-toplevel``
+    2. Scanning ``/tmp/repo/*/`` for a git repository
+
+    Step 0 handles any ``clone_dest`` value and is the primary path.
+    Steps 1-2 are fallbacks for containers that were cloned before the
+    metadata mechanism was introduced.
+
+    Returns the resolved path, or *working_dir* as fallback.
+    """
+    if working_dir != _DEFAULT_WD:
+        return working_dir
+
+    # Step 0: container metadata — written by sandbox_initialize after clone
+    ec0, out0 = container.exec_run(
+        ["/bin/sh", "-c",
+         "cat /home/sandbox/.sandbox-meta.json 2>/dev/null || echo __NO_META__"],
+        stdout=True,
+    )
+    if ec0 == 0:
+        _stdout0, _ = (out0 if isinstance(out0, tuple) else (out0, b""))
+        meta_str = _stdout0.decode("utf-8", errors="replace").strip() if _stdout0 else ""
+        if meta_str and meta_str != "__NO_META__":
+            try:
+                meta = json.loads(meta_str)
+                clone_path = meta.get("clone_path", "")
+                if clone_path:
+                    ec_ck, out_ck = container.exec_run(
+                        ["/bin/sh", "-c",
+                         f"cd {shlex.quote(clone_path)} && git rev-parse --show-toplevel 2>/dev/null || echo __NO_REPO__"],
+                        stdout=True,
+                    )
+                    if ec_ck == 0:
+                        _stdout_ck, _ = (out_ck if isinstance(out_ck, tuple) else (out_ck, b""))
+                        verified = _stdout_ck.decode("utf-8", errors="replace").strip() if _stdout_ck else ""
+                        if verified and verified != "__NO_REPO__":
+                            return verified
+            except json.JSONDecodeError:
+                pass
+
+    # Step 1: test the default location
+    ec, out = container.exec_run(
+        ["/bin/sh", "-c",
+         "cd /home/sandbox && git rev-parse --show-toplevel 2>/dev/null || echo __NO_REPO__"],
+        stdout=True,
+    )
+    if ec == 0:
+        _stdout, _ = (out if isinstance(out, tuple) else (out, b""))
+        path = _stdout.decode("utf-8", errors="replace").strip() if _stdout else ""
+        if path and path != "__NO_REPO__":
+            return path
+
+    # Step 2: scan /tmp/repo/ for cloned repositories
+    ec2, out2 = container.exec_run(
+        ["/bin/sh", "-c",
+         "for d in /tmp/repo/*/; do"
+         '  [ -d "${d}.git" ] &&'
+         "  git -C \"$d\" rev-parse --show-toplevel 2>/dev/null && exit 0;"
+         "done; echo __NO_REPO__"],
+        stdout=True,
+    )
+    if ec2 == 0:
+        _stdout2, _ = (out2 if isinstance(out2, tuple) else (out2, b""))
+        _path2 = _stdout2.decode("utf-8", errors="replace").strip() if _stdout2 else ""
+        if _path2 and _path2 != "__NO_REPO__":
+            return _path2
+
+    return working_dir  # fallback
+
+
+# ---------------------------------------------------------------------------
 # Inline Python script for GitHub API-based push (sandbox_create_pr)
 # ---------------------------------------------------------------------------
 
@@ -178,6 +266,7 @@ def checkpoint(
         return json.dumps({"error": str(e)})
 
     cid = container_id[:12]
+    working_dir = resolve_git_root(container, working_dir)
     safe_wd = shlex.quote(working_dir)
     safe_msg = shlex.quote(message)
 
@@ -254,6 +343,7 @@ def checkpoint_list(
     except Exception as e:
         return json.dumps({"error": str(e)})
 
+    working_dir = resolve_git_root(container, working_dir)
     safe_wd = shlex.quote(working_dir)
     cmd = (
         f"cd {safe_wd} &&"
@@ -333,6 +423,7 @@ def checkpoint_restore(
         return json.dumps({"error": str(e)})
 
     cid = container_id[:12]
+    working_dir = resolve_git_root(container, working_dir)
     safe_wd = shlex.quote(working_dir)
     safe_sha = shlex.quote(sha)
 
@@ -684,6 +775,7 @@ Returns:
 
     cid = container_id[:12]
     run_id = get_or_create_run_id(cid)
+    working_dir = resolve_git_root(container, working_dir)
 
     # Helper: run a shell command in the container in working_dir.
     def _run(cmd: str) -> tuple[int, str, str]:
@@ -1087,6 +1179,7 @@ def sandbox_create_pr(
         return json.dumps({"error": str(e)})
 
     cid = container_id[:12]
+    working_dir = resolve_git_root(container, working_dir)
 
     if not _REPO_FORMAT_RE.match(repo):
         return json.dumps({

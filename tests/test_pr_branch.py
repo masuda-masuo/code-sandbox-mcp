@@ -35,6 +35,7 @@ class TestSetupPrBranch:
             (0, (b"Cloned repo\n", b"")),
             (0, (b"Switched to branch\n", b"")),
             (0, (b"Installed\n", b"")),
+            (0, (b"", b"")),
         ])
 
         with patch("code_sandbox_mcp.tools.container.logger"):
@@ -86,6 +87,7 @@ class TestSetupPrBranch:
             (0, (b"Cloned\n", b"")),
             (0, (b"Switched\n", b"")),
             (1, (b"", b"install failed")),
+            (0, (b"", b"")),
         ])
 
         with patch("code_sandbox_mcp.tools.container.logger") as mock_logger:
@@ -126,6 +128,7 @@ class TestSetupPrBranch:
             (0, (b"Cloning into '/tmp/repo/myrepo'...", b"")),
             (0, (b"Switched to branch 'feature-branch'", b"")),
             (0, (b"Installed", b"")),
+            (0, (b"", b"")),
         ]
         with patch("code_sandbox_mcp.tools.container.record_copy"):
             result = _setup_pr_branch(
@@ -345,6 +348,7 @@ class TestPipExtrasParam:
             (0, (b"Cloned\n", b"")),
             (0, (b"Switched\n", b"")),
             (0, (b"Installed\n", b"")),
+            (0, (b"", b"")),
         ])
 
         with patch("code_sandbox_mcp.tools.container.logger"):
@@ -362,11 +366,12 @@ class TestPipExtrasParam:
         assert "pip install -e '.[testing]'" in install_cmd
 
     def test_pip_extras_none_skips_install(self):
-        # 3 exec calls: gh view, clone, checkout. No pip install.
+        # 4 exec calls: gh view, clone, checkout, meta write. No pip install.
         container = _make_container_mock([
             (0, (_PR_INFO_JSON.encode(), b"")),
             (0, (b"Cloned\n", b"")),
             (0, (b"Switched\n", b"")),
+            (0, (b"", b"")),
         ])
 
         with patch("code_sandbox_mcp.tools.container.logger"):
@@ -376,8 +381,8 @@ class TestPipExtrasParam:
             )
 
         assert "PR #136" in result
-        # Should be exactly 3 exec calls (no pip install)
-        assert container.exec_run.call_count == 3
+        # Should be exactly 4 exec calls (no pip install, +1 meta write)
+        assert container.exec_run.call_count == 4
 
 
 class TestCloneRepoPrInteraction:

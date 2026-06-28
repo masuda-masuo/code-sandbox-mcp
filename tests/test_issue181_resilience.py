@@ -347,6 +347,7 @@ class TestSandboxStopUnpushedCheckpoints:
     ) -> None:
         """Early-return path: does not call record_stop."""
         container = MagicMock()
+        container.exec_run.return_value = (0, (b"__NO_REPO__", b""))
         client = MagicMock()
         client.containers.get.return_value = container
         mock_docker.return_value = client
@@ -395,6 +396,7 @@ class TestSandboxStopUnpushedCheckpoints:
         mock_record: MagicMock,
     ) -> None:
         container = MagicMock()
+        container.exec_run.return_value = (0, (b"__NO_REPO__", b""))
         client = MagicMock()
         client.containers.get.return_value = container
         mock_docker.return_value = client
@@ -421,6 +423,7 @@ class TestSandboxStopUnpushedCheckpoints:
         mock_record: MagicMock,
     ) -> None:
         container = MagicMock()
+        container.exec_run.return_value = (0, (b"__NO_REPO__", b""))
         client = MagicMock()
         client.containers.get.return_value = container
         mock_docker.return_value = client

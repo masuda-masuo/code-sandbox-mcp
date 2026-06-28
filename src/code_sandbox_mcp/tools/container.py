@@ -56,7 +56,7 @@ from code_sandbox_mcp.security import (
     validate_image_ref,
 )
 from code_sandbox_mcp.tools.common import RECOVERY_DOCKER_TIMEOUT, _coerce_list_arg, _docker
-from code_sandbox_mcp.tools.vcs import checkpoint_list
+from code_sandbox_mcp.tools.vcs import checkpoint_list, resolve_git_root
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -210,6 +210,27 @@ def _shiori_preclone_exists(clone_repo: str) -> bool:
     return clone_path.is_dir() and (clone_path / ".git").is_dir()
 
 
+def _write_clone_meta(container: Any, clone_path: str) -> None:
+    """Write clone destination path into container metadata.
+
+    The metadata file (``/home/sandbox/.sandbox-meta.json``) is read by
+    :func:`resolve_git_root` to auto-detect the git repository root
+    regardless of the ``clone_dest`` value.
+
+    Failures are logged but not propagated so that a metadata write
+    failure never breaks an otherwise successful clone.
+    """
+    try:
+        meta_json = json.dumps({"clone_path": clone_path})
+        safe_meta = shlex.quote(meta_json)
+        container.exec_run(
+            ["/bin/sh", "-c",
+             f"mkdir -p /home/sandbox && printf '%s' {safe_meta} > /home/sandbox/.sandbox-meta.json"],
+        )
+    except Exception as e:
+        logger.warning("Failed to write clone meta: %s", e)
+
+
 def _clone_shiori_repo_to_container(
     container: Any,
     container_id: str,
@@ -295,11 +316,14 @@ def _clone_shiori_repo_to_container(
     finally:
         os.unlink(tmp.name)
 
+    clone_path = f"{clone_dest}/{repo_name}"
+    _write_clone_meta(container, clone_path)
+
     record_copy(
         container_id[:12],
         "clone_shiori_repo",
         str(resolved_from),
-        f"{clone_dest}/{repo_name}",
+        clone_path,
     )
 
     # -- Run git fetch --unshallow --
@@ -367,6 +391,7 @@ def _clone_repo_via_network(
         if not inject_vcs_token:
             hint = " (if this is a private repository, retry with inject_vcs_token=True so gh can authenticate)"
         raise RuntimeError(f"gh repo clone failed (exit {exit_code}): {detail}{hint}")
+    _write_clone_meta(container, clone_path)
     return "Cloned {} via network into {} in container {}".format(clone_repo, clone_path, container_id[:12])
 
 
@@ -567,6 +592,8 @@ def _setup_pr_branch(
                 exit_code,
                 (stderr_text or install_output).strip(),
             )
+
+    _write_clone_meta(container, safe_dest)
 
     record_copy(
         cid,
@@ -851,6 +878,7 @@ def sandbox_stop(
 
     # Check for unpushed checkpoints (Issue #264) — reuse checkpoint_list
     if not force:
+        working_dir = resolve_git_root(container, working_dir)
         result = json.loads(checkpoint_list(container_id, working_dir))
         checkpoints = result.get("checkpoints", [])
         if checkpoints:
