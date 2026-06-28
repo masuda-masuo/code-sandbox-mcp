@@ -27,7 +27,7 @@ import shlex
 import tarfile
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NamedTuple
 
 from code_sandbox_mcp.journal import record_file_write
 
@@ -1048,9 +1048,14 @@ _RUFF_SECURITY_IGNORE = ",".join([
     "S311",          # random — usually non-security
     "S110", "S112",  # try-except-pass / try-except-continue — style, not security
 ])
+#: Return type for :func:`_determine_scope` — a ``(scope, workdir)`` tuple
+#: with named field access.
+class ScopeWorkdir(NamedTuple):
+    scope: str
+    workdir: str
 
 
-def _determine_scope(file_path: str) -> tuple[str, str]:
+def _determine_scope(file_path: str) -> ScopeWorkdir:
     """Determine the project scope and working directory for lint/type-check.
 
     Returns a ``(scope, workdir)`` tuple:
@@ -1065,23 +1070,23 @@ def _determine_scope(file_path: str) -> tuple[str, str]:
     Examples
     --------
     >>> _determine_scope("/app/src/foo.py")
-    ("src", "/app")
+    ('src', '/app')
     >>> _determine_scope("src/foo.py")
-    ("src", ".")
+    ('src', '.')
     >>> _determine_scope("/home/foo.py")
-    ("/home", "/home")
+    ('/home', '/home')
     >>> _determine_scope("foo.py")
-    (".", ".")
+    ('.', '.')
     """
     normalized = file_path.replace("\\", "/")
     idx = normalized.find("/src/")
     if idx != -1:
-        return ("src", normalized[:idx])
+        return ScopeWorkdir("src", normalized[:idx] or ".")
     if normalized.startswith("src/"):
-        return ("src", ".")
+        return ScopeWorkdir("src", ".")
     parent = normalized.rsplit("/", 1)[0] if "/" in normalized else ""
     scope = parent or "."
-    return (scope, scope)
+    return ScopeWorkdir(scope, scope)
 
 
 def _run_ruff_verify(container: Any, path: str, workdir: str | None = None) -> VerifyResult:
@@ -1520,7 +1525,7 @@ def lint_file(
     client: Any,
     container_id: str,
     file_path: str,
-    scope_workdir: tuple[str, str] | None = None,
+    scope_workdir: ScopeWorkdir | None = None,
 ) -> list[dict[str, Any]]:
     """Run a linter on *file_path* inside the container.
 
@@ -1531,7 +1536,7 @@ def lint_file(
     - ``rule`` (str): rule identifier (e.g. ``"F401"``, ``"unused-import"``)
     - ``message`` (str): human-readable message
 
-    When *scope_workdir* (a ``(scope, workdir)`` tuple from
+    When *scope_workdir* (a :class:`ScopeWorkdir` from
     :func:`_determine_scope`) is provided and the single-file check
     passes, the linter is also run on the full scope to catch issues
     that only appear in project-wide checks (like I001 import ordering).
@@ -1627,14 +1632,14 @@ def type_check_file(
     client: Any,
     container_id: str,
     file_path: str,
-    scope_workdir: tuple[str, str] | None = None,
+    scope_workdir: ScopeWorkdir | None = None,
 ) -> list[dict[str, Any]]:
     """Run a type checker on *file_path* inside the container.
 
     Returns the same structure as :func:`lint_file`.
     If no type checker is installed, returns ``rule: "no-typechecker"``.
 
-    When *scope_workdir* (a ``(scope, workdir)`` tuple from
+    When *scope_workdir* (a :class:`ScopeWorkdir` from
     :func:`_determine_scope`) is provided and the single-file check
     passes, the type checker is also run on the full scope to catch
     issues that only appear in project-wide checks.

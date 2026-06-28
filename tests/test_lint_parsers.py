@@ -403,6 +403,10 @@ class TestDetermineScope:
         """/src/ nested deeper returns scope=src and workdir=parent of src/."""
         assert _determine_scope("/home/sandbox/project/src/lib/foo.py") == ("src", "/home/sandbox/project")
 
+    def test_src_at_root_absolute(self) -> None:
+        """/src/ at root (idx=0) returns scope=src and workdir='.'."""
+        assert _determine_scope("/src/foo.py") == ("src", ".")
+
     def test_src_prefix_relative(self) -> None:
         """src/ prefix returns scope=src and workdir='.'."""
         assert _determine_scope("src/foo.py") == ("src", ".")
