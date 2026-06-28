@@ -1604,7 +1604,9 @@ def lint_file(
         findings = _run_python_linter(container, file_path, fix=fix)
         if not findings and scope_workdir:
             scope_path, workdir = scope_workdir
-            scope_r = _run_ruff_verify(container, scope_path, workdir=workdir)
+            # Scope phase is always read-only: a single-file fix must
+            # never mutate the project-wide scope (Issue #284).
+            scope_r = _run_ruff_verify(container, scope_path, workdir=workdir, fix=False)
             if scope_r.status not in ("not_available", "error"):
                 return scope_r.findings
         return findings
@@ -1612,7 +1614,9 @@ def lint_file(
         findings = _run_js_linter(container, file_path, fix=fix)
         if not findings and scope_workdir:
             scope_path, workdir = scope_workdir
-            scope_r = _run_eslint_verify(container, scope_path, workdir=workdir)
+            # Scope phase is always read-only: a single-file fix must
+            # never mutate the project-wide scope (Issue #284).
+            scope_r = _run_eslint_verify(container, scope_path, workdir=workdir, fix=False)
             if scope_r.status not in ("not_available", "error"):
                 return scope_r.findings
         return findings
