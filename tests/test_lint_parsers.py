@@ -317,3 +317,70 @@ class TestLintFileParsers:
     def test_ruff_non_list_json(self) -> None:
         """Ruff output that is valid JSON but not a list."""
         assert _parse_ruff_output('{"summary": "ok"}', "file.py") == []
+
+
+# ===================================================================
+# ruff security rules (Issue #218)
+# ===================================================================
+
+
+class TestRuffSecurityRules:
+    """Verify curated S-rule selection and severity mapping."""
+
+    def test_security_rules_are_warning_not_error(self) -> None:
+        """S-prefixed rules must map to 'warning', not 'error'."""
+        security_rules = [
+            "S102", "S113", "S301", "S302", "S307",
+            "S313", "S324", "S501", "S506", "S507",
+            "S602", "S603", "S701",
+        ]
+        for rule in security_rules:
+            assert _determine_lint_severity(rule) == "warning", (
+                f"{rule} should be 'warning', not 'error'"
+            )
+
+    def test_excluded_noisy_rules_still_map_to_warning(self) -> None:
+        """Excluded rules (S101, S105-107, S110-112, S311) are still warning
+        in the severity map — they are excluded at the ruff CLI level, not here."""
+        noisy = ["S101", "S105", "S106", "S107", "S110", "S112", "S311"]
+        for rule in noisy:
+            assert _determine_lint_severity(rule) == "warning"
+
+    def test_security_finding_parsed_correctly(self) -> None:
+        """A realistic S-rule finding is parsed with correct fields."""
+        raw = json.dumps([
+            {
+                "filename": "app.py",
+                "location": {"row": 12},
+                "code": "S602",
+                "message": "subprocess call with shell=True identified",
+            }
+        ])
+        result = _parse_ruff_output(raw, "app.py")
+        assert len(result) == 1
+        assert result[0]["rule"] == "S602"
+        assert result[0]["line"] == 12
+        assert result[0]["file"] == "app.py"
+
+    def test_mixed_error_and_security_findings(self) -> None:
+        """E/F errors and S warnings can coexist in one ruff run."""
+        raw = json.dumps([
+            {
+                "filename": "app.py",
+                "location": {"row": 1},
+                "code": "F401",
+                "message": "unused import",
+            },
+            {
+                "filename": "app.py",
+                "location": {"row": 5},
+                "code": "S507",
+                "message": "paramiko call without host key verification",
+            },
+        ])
+        result = _parse_ruff_output(raw, "app.py")
+        assert len(result) == 2
+        rules = {r["rule"] for r in result}
+        assert rules == {"F401", "S507"}
+        assert _determine_lint_severity("F401") == "error"
+        assert _determine_lint_severity("S507") == "warning"

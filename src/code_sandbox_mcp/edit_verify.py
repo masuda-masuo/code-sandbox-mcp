@@ -1008,13 +1008,43 @@ def _get_extension(file_path: str) -> str:
 # - "skipped" is only for intentional non-execution (e.g. go type layer)
 
 
+_RUFF_SECURITY_SELECT = ",".join([
+    # shell injection
+    "S102", "S602", "S603", "S604", "S605", "S606", "S607",
+    # eval / exec
+    "S307",
+    # deserialization
+    "S301", "S302", "S506",
+    # TLS / SSL
+    "S501", "S502", "S503", "S504",
+    # weak hash
+    "S324",
+    # XML (XXE)
+    "S313", "S314", "S315", "S316", "S317", "S318", "S319", "S320",
+    # network safety
+    "S113", "S507",
+    # template injection
+    "S701",
+])
+
+_RUFF_SECURITY_IGNORE = ",".join([
+    "S101",          # assert — normal in pytest
+    "S105", "S106", "S107",  # hardcoded-password heuristics — high false-positive rate
+    "S311",          # random — usually non-security
+    "S110", "S112",  # try-except-pass / try-except-continue — style, not security
+])
+
+
 def _run_ruff_verify(container: Any, path: str) -> VerifyResult:
     """Run ruff on *path*.  Returns VerifyResult envelope."""
     ec, output = container.exec_run(
         [
             "/bin/sh",
             "-c",
-            f"{_SANDBOX_ENV}ruff check --output-format json {_quote_path(path)}",
+            f"{_SANDBOX_ENV}ruff check --output-format json "
+            f"--extend-select {_RUFF_SECURITY_SELECT} "
+            f"--extend-ignore {_RUFF_SECURITY_IGNORE} "
+            f"{_quote_path(path)}",
         ],
         stdout=True,
         stderr=True,
