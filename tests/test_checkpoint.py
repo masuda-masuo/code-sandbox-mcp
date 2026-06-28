@@ -1,16 +1,14 @@
 """Tests for checkpoint, checkpoint_list, checkpoint_restore."""
 from __future__ import annotations
 
-import json
 from unittest.mock import MagicMock, patch
-
-from tests.conftest import _make_container_mock, _make_client_mock, _decode
 
 from code_sandbox_mcp.tools.vcs import (
     checkpoint,
     checkpoint_list,
     checkpoint_restore,
 )
+from tests.conftest import _decode, _make_client_mock, _make_container_mock
 
 
 class TestCheckpoint:

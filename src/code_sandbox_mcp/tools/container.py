@@ -48,7 +48,10 @@ from code_sandbox_mcp.result_cache import (
 )
 from code_sandbox_mcp.security import (
     DEFAULT_SECURITY_PROFILE,
+    _detect_host_resources,
+    _parse_mem_to_mb,
     build_secure_run_kwargs,
+    get_default_profile,
     validate_image_ref,
 )
 from code_sandbox_mcp.tools.common import RECOVERY_DOCKER_TIMEOUT, _docker
@@ -62,6 +65,10 @@ _DEFAULT_IMAGE: str = "ghcr.io/masuda-masuo/code-sandbox-mcp/sandbox@sha256:f5c4
 _SHIORI_REPOS_PATH: str | None = None
 
 _CLONE_REPO_PATTERN: re.Pattern[str] = re.compile(r"^[a-zA-Z0-9._-]+$")
+
+#: Hard cap ratio for per-call mem_limit override (Issue #201).
+#: Override values exceeding this fraction of host memory are rejected.
+_HARD_CAP_RATIO: float = 0.9
 
 _SENSITIVE_FILE_BASENAMES: frozenset[str] = frozenset(
     {
@@ -698,7 +705,7 @@ def sandbox_initialize(
     except ValueError as e:
         return f"Error: {e}"
 
-    profile = replace(DEFAULT_SECURITY_PROFILE, allow_network=allow_network)
+    profile = replace(get_default_profile(), allow_network=allow_network)
 
     # Resource overrides (Issue #181): the default 512MB / 0.5-CPU /
     # no-swap profile is too small for heavy installs (e.g. torch), which
@@ -706,13 +713,28 @@ def sandbox_initialize(
     # the ceiling when they know they need it.  memswap is pinned to
     # mem_limit so swap stays disabled at the new ceiling (docker also
     # requires memswap_limit >= mem_limit).
+    # Hard cap validation (Issue #201): per-call override cannot exceed
+    # host resource limits.
     resource_overrides: dict[str, Any] = {}
+    host_mb, host_cpus = 0, 0
+    if mem_limit is not None or cpus is not None:
+        host_mb, host_cpus = _detect_host_resources()
     if mem_limit is not None:
+        if host_mb > 0:
+            requested_mb = _parse_mem_to_mb(mem_limit)
+            cap_mb = int(host_mb * _HARD_CAP_RATIO)
+            if requested_mb > cap_mb:
+                return (
+                    f"Error: mem_limit {mem_limit} exceeds host cap "
+                    f"({_HARD_CAP_RATIO:.0%} of host memory)"
+                )
         resource_overrides["mem_limit"] = mem_limit
         resource_overrides["memswap_limit"] = mem_limit
     if cpus is not None:
         if cpus <= 0:
             return "Error: cpus must be > 0"
+        if host_cpus and cpus > host_cpus:
+            return "Error: cpus exceeds host CPU count"
         resource_overrides["cpu_quota"] = int(cpus * profile.cpu_period)
 
     run_kwargs = build_secure_run_kwargs(
@@ -737,6 +759,8 @@ def sandbox_initialize(
         resolved,
         allow_network=allow_network,
         inject_vcs_token=inject_vcs_token,
+        mem_limit=mem_limit,
+        cpus=cpus,
     )
 
     # -- Clone: Shiori fast-path, network fallback (Issue #84, #146) --
@@ -988,7 +1012,7 @@ def run_container_and_exec(
     try:
         resolved = _resolve_image_ref(resolved)
         validate_image_ref(resolved)
-        profile = replace(DEFAULT_SECURITY_PROFILE, allow_network=allow_network)
+        profile = replace(get_default_profile(), allow_network=allow_network)
         run_kwargs = build_secure_run_kwargs(
             profile,
             command="sleep infinity",
@@ -1008,6 +1032,8 @@ def run_container_and_exec(
         resolved,
         allow_network=allow_network,
         inject_vcs_token=inject_vcs_token,
+        mem_limit=None,
+        cpus=None,
     )
 
     # --- Clone: Shiori fast-path, network fallback (Issue #84, #146) ---
