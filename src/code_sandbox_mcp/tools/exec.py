@@ -7,9 +7,10 @@ import json
 import os
 import shlex
 import time
-from typing import Any
+from typing import Annotated, Any
 
 from docker.errors import NotFound
+from pydantic import BeforeValidator
 
 from code_sandbox_mcp.journal import record_exec as journal_record_exec
 from code_sandbox_mcp.output_control import (
@@ -29,9 +30,20 @@ from code_sandbox_mcp.result_cache import (
 from code_sandbox_mcp.tools.common import RECOVERY_DOCKER_TIMEOUT, _docker
 
 
+def _coerce_list_arg(v: object) -> object:
+    """Coerce a JSON-stringified list to list (MCP client serialization workaround, issue #296)."""
+    if isinstance(v, str):
+        try:
+            parsed = json.loads(v)
+            if isinstance(parsed, list):
+                return parsed
+        except ValueError:
+            pass
+    return v
+
 def sandbox_exec(
     container_id: str,
-    commands: list[str] | None = None,
+    commands: Annotated[list[str], BeforeValidator(_coerce_list_arg)] | None = None,
     working_dir: str = "",
     verbose: str = "summary",
     max_lines: int = 100,
@@ -40,7 +52,7 @@ def sandbox_exec(
     timeout: int = 0,
     max_output_tokens: int = 0,
     input_hash: str = "",
-    argv: list[str] | None = None,
+    argv: Annotated[list[str], BeforeValidator(_coerce_list_arg)] | None = None,
 ) -> str:
     """Execute commands inside a running sandbox container.
 
@@ -300,7 +312,7 @@ def sandbox_exec(
     return json.dumps(result)
 
 
-def sandbox_exec_background(container_id: str, commands: list[str], working_dir: str = "") -> str:
+def sandbox_exec_background(container_id: str, commands: Annotated[list[str], BeforeValidator(_coerce_list_arg)], working_dir: str = "") -> str:
     """Execute commands in the background inside a running sandbox container.
 
     The command is started with ``nohup`` so it continues running even
