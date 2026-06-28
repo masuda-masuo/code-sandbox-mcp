@@ -679,33 +679,33 @@ class TestCoerceListArg:
     def _ta(self) -> "TypeAdapter[list[str]]":
         from typing import Annotated
         from pydantic import BeforeValidator, TypeAdapter
-        from code_sandbox_mcp.tools.exec import _coerce_list_arg
+        from code_sandbox_mcp.tools.common import _coerce_list_arg
         return TypeAdapter(Annotated[list[str], BeforeValidator(_coerce_list_arg)])
 
     def test_list_passthrough(self) -> None:
         """A real list is returned unchanged."""
-        from code_sandbox_mcp.tools.exec import _coerce_list_arg
+        from code_sandbox_mcp.tools.common import _coerce_list_arg
         v = ["echo", "hi"]
         assert _coerce_list_arg(v) is v
 
     def test_json_string_is_coerced_to_list(self) -> None:
         """A JSON-encoded list string is decoded to a list."""
-        from code_sandbox_mcp.tools.exec import _coerce_list_arg
+        from code_sandbox_mcp.tools.common import _coerce_list_arg
         assert _coerce_list_arg('["echo", "hi"]') == ["echo", "hi"]
 
     def test_non_json_string_is_returned_as_is(self) -> None:
         """A non-JSON string is returned unchanged (pydantic will reject it later)."""
-        from code_sandbox_mcp.tools.exec import _coerce_list_arg
+        from code_sandbox_mcp.tools.common import _coerce_list_arg
         assert _coerce_list_arg("not-a-list") == "not-a-list"
 
     def test_json_object_string_not_coerced(self) -> None:
         """A JSON string whose payload is not a list is returned unchanged."""
-        from code_sandbox_mcp.tools.exec import _coerce_list_arg
+        from code_sandbox_mcp.tools.common import _coerce_list_arg
         assert _coerce_list_arg('{"key": "value"}') == '{"key": "value"}'
 
     def test_none_passthrough(self) -> None:
         """None is returned unchanged."""
-        from code_sandbox_mcp.tools.exec import _coerce_list_arg
+        from code_sandbox_mcp.tools.common import _coerce_list_arg
         assert _coerce_list_arg(None) is None
 
     def test_pydantic_accepts_json_string_for_commands(self) -> None:
@@ -722,3 +722,54 @@ class TestCoerceListArg:
         """pydantic TypeAdapter still accepts a real list (no regression)."""
         result = self._ta().validate_python(["git", "log", "--oneline"])
         assert result == ["git", "log", "--oneline"]
+
+    # --- Additional tool-specific TypeAdapter tests (issue #299) ---
+
+    def test_run_container_and_exec_commands_coercion(self) -> None:
+        """run_container_and_exec commands: JSON-stringified list is coerced."""
+        from typing import Annotated
+        from pydantic import BeforeValidator, TypeAdapter
+        from code_sandbox_mcp.tools.common import _coerce_list_arg
+        ta = TypeAdapter(Annotated[list[str], BeforeValidator(_coerce_list_arg)] | None)
+        result = ta.validate_python('["echo", "hello"]')
+        assert result == ["echo", "hello"]
+
+    def test_rerun_failed_commands_coercion(self) -> None:
+        """rerun_failed commands: JSON-stringified list is coerced."""
+        from typing import Annotated
+        from pydantic import BeforeValidator, TypeAdapter
+        from code_sandbox_mcp.tools.common import _coerce_list_arg
+        ta = TypeAdapter(Annotated[list[str], BeforeValidator(_coerce_list_arg)] | None)
+        result = ta.validate_python('["cmd1", "cmd2"]')
+        assert result == ["cmd1", "cmd2"]
+
+    def test_sandbox_exec_diff_commands_coercion(self) -> None:
+        """sandbox_exec_diff commands: JSON-stringified list is coerced."""
+        from typing import Annotated
+        from pydantic import BeforeValidator, TypeAdapter
+        from code_sandbox_mcp.tools.common import _coerce_list_arg
+        ta = TypeAdapter(Annotated[list[str], BeforeValidator(_coerce_list_arg)])
+        result = ta.validate_python('["diff cmd1", "diff cmd2"]')
+        assert result == ["diff cmd1", "diff cmd2"]
+
+    def test_run_test_environment_services_coercion(self) -> None:
+        """run_test_environment services: JSON-stringified list[dict] is coerced."""
+        from typing import Annotated, Any
+        from pydantic import BeforeValidator, TypeAdapter
+        from code_sandbox_mcp.tools.common import _coerce_list_arg
+        ta = TypeAdapter(Annotated[list[dict[str, Any]], BeforeValidator(_coerce_list_arg)])
+        result = ta.validate_python('[{"name": "svc1", "image": "alpine"}]')
+        assert result == [{"name": "svc1", "image": "alpine"}]
+
+    def test_package_install_packages_coercion(self) -> None:
+        """package_install packages: JSON-stringified list is coerced, single string passes through."""
+        from typing import Annotated
+        from pydantic import BeforeValidator, TypeAdapter
+        from code_sandbox_mcp.tools.common import _coerce_list_arg
+        ta = TypeAdapter(Annotated[str | list[str], BeforeValidator(_coerce_list_arg)] | None)
+        # JSON-stringified list
+        result = ta.validate_python('["requests", "click"]')
+        assert result == ["requests", "click"]
+        # Plain string passes through
+        result2 = ta.validate_python("requests")
+        assert result2 == "requests"
