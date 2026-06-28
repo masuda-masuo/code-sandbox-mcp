@@ -137,37 +137,46 @@ class PytestAdapter:
         total = int(summary.get("total", 0))
         passed = int(summary.get("passed", 0))
         failed = int(summary.get("failed", 0))
+        errors = int(summary.get("errors", 0))
         # Fallback for reports that lack "passed" count but have total/failed.
-        passed = total - failed if passed == 0 and total > 0 else passed
+        passed = total - failed - errors if passed == 0 and total > 0 else passed
+        failed_total = failed + errors
 
         failures_list: list[TestFailure] = []
         tests = report.get("tests", [])
         for t in tests:
             outcome = t.get("outcome", "")
-            if outcome in ("failed", "error"):
-                call = t.get("call", {})
-                # Crash details may be None if no traceback was captured.
-                crashdetails = call.get("crash", {}) or {}
-                traceback_str = crashdetails.get("traceback", "")
-                pruned = prune_library_frames(traceback_str)
+            if outcome not in ("failed", "error"):
+                continue
+            # Search for the failing stage: call → setup → teardown
+            stage: dict[str, Any] = {}
+            for name in ("call", "setup", "teardown"):
+                s = t.get(name) or {}
+                if s.get("outcome") in ("failed", "error") or s.get("crash"):
+                    stage = s
+                    break
+            crash = stage.get("crash") or {}
+            longrepr = stage.get("longrepr", "") or ""
+            error_text = prune_library_frames(longrepr) if longrepr else ""
+            if not error_text:
+                error_text = crash.get("message", "unknown")
+            nodeid = t.get("nodeid", t.get("name", "unknown"))
 
-                failures_list.append(
-                    TestFailure(
-                        test=t.get("nodeid", t.get("name", "unknown")),
-                        # Use pruned traceback if available, else fall back to
-                        # the call's message (e.g. "AssertionError").
-                        error=pruned if pruned else call.get("message", "unknown"),
-                        file=t.get("file", ""),
-                        line=int(t.get("line", 0)),
-                    )
+            failures_list.append(
+                TestFailure(
+                    test=nodeid,
+                    error=error_text,
+                    file=crash.get("path", "") or nodeid.split("::", 1)[0],
+                    line=int(crash.get("lineno", t.get("lineno", 0)) or 0),
                 )
+            )
 
-        status = "failed" if failed > 0 else "ok"
+        status = "failed" if failed_total > 0 else "ok"
         return TestReport(
             status=status,
             duration=duration,
             passed=passed,
-            failed=failed,
+            failed=failed_total,
             failures=failures_list if failures_list else None,
         )
 
@@ -194,7 +203,18 @@ class JestAdapter:
     @staticmethod
     def parse(report: dict[str, Any]) -> TestReport:
         """Parse a jest --json dict into a TestReport."""
-        duration = float(report.get("numRuntimeMs", 0)) / 1000.0
+        # Compute duration from startTime and testResults endTime/startTime.
+        # numRuntimeMs is NOT a real key in jest --json output.
+        start_time = float(report.get("startTime", 0))
+        duration = 0.0
+        if start_time > 0:
+            latest_end = start_time
+            for suite in report.get("testResults", []):
+                suite_start = float(suite.get("startTime", 0)) or start_time
+                suite_end = float(suite.get("endTime", 0)) or suite_start
+                if suite_end > latest_end:
+                    latest_end = suite_end
+            duration = (latest_end - start_time) / 1000.0
         passed = int(report.get("numPassedTests", 0))
         failed = int(report.get("numFailedTests", 0))
 
@@ -280,6 +300,8 @@ class GoTestAdapter:
         passed_count = 0
         failed_count = 0
         duration = 0.0
+        package_failed = False
+        package_output: list[str] = []
 
         for event in events:
             action = event.get("Action", "")
@@ -302,6 +324,10 @@ class GoTestAdapter:
                 m = re.search(r"ok\s+\S+\s+([\d]+\.?[\d]*)s", text)
                 if m:
                     duration = max(duration, float(m.group(1)))
+                package_output.append(text)
+            # Package-level fail (build/compile error, no individual test fails)
+            elif action == "fail" and not test_name:
+                package_failed = True
 
         # Build failures list from collected data.
         for tname, tdata in tests.items():
@@ -333,6 +359,20 @@ class GoTestAdapter:
                 )
             elif tdata.get("status") == "pass":
                 passed_count += 1
+
+        # Package-level fail (e.g. build/compile error) with no individual fails
+        if package_failed and failed_count == 0:
+            failed_count = 1
+            combined_output = "".join(package_output)
+            pruned = prune_library_frames(combined_output)
+            failures_list.append(
+                TestFailure(
+                    test="(package)",
+                    error=pruned if pruned else "build failed",
+                    file="",
+                    line=0,
+                )
+            )
 
         # Final event may carry Elapsed for overall duration.
         if events:
