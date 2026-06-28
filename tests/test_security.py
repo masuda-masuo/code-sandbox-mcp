@@ -521,17 +521,8 @@ class TestGetSetDefaultProfile:
     def test_returns_static_default_by_default(self) -> None:
         from code_sandbox_mcp.security import (
             DEFAULT_SECURITY_PROFILE,
-            _effective_default_profile,
             get_default_profile,
         )
-        # Ensure no override is set
-        saved = _effective_default_profile
-        try:
-            from code_sandbox_mcp.security import set_default_profile
-            set_default_profile(None)  # noqa: type error ok for test
-        except TypeError:
-            pass
-        # After clearing, should return DEFAULT
         result = get_default_profile()
         assert result is DEFAULT_SECURITY_PROFILE
 

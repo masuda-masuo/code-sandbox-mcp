@@ -4,9 +4,8 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
-from tests.conftest import _make_container_mock, _make_client_mock, _decode
-
 from code_sandbox_mcp.tools.vcs import sandbox_create_pr
+from tests.conftest import _decode, _make_client_mock, _make_container_mock
 
 
 class TestSandboxCreatePr:

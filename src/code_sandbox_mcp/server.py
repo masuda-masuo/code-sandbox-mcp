@@ -401,9 +401,10 @@ def main() -> None:
     parser = _build_arg_parser()
     args = parser.parse_args()
 
-    from code_sandbox_mcp.tools import container as _ct_mod
     from dataclasses import replace
-    from code_sandbox_mcp.security import DEFAULT_SECURITY_PROFILE, _DEFAULT_CPU_PERIOD
+
+    from code_sandbox_mcp.security import _DEFAULT_CPU_PERIOD, DEFAULT_SECURITY_PROFILE
+    from code_sandbox_mcp.tools import container as _ct_mod
     if args.default_image:
         validate_image_ref(args.default_image)
         _ct_mod._DEFAULT_IMAGE = args.default_image
