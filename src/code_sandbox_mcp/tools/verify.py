@@ -278,6 +278,7 @@ def verify_in_container(
     verbose: bool = False,
     pytest_args: str | None = None,
     language: str | None = None,
+    working_dir: str | None = None,
 ) -> str:
     """Run pytest with optional filter → full-suite fallback and diff summary.
 
@@ -327,7 +328,9 @@ def verify_in_container(
     Args:
         container_id: 12-character container ID prefix.
         path: File or directory path inside the container (e.g.
-            ``"tests/"``).
+            ``"tests/"``).  When ``working_dir`` is set, this is
+            resolved relative to ``working_dir``; otherwise it is an
+            absolute path or relative to the container's default directory.
         test_filter: pytest ``-k`` expression for selective test
             execution.  When set, filtered tests run first; if
             they pass, the full suite runs automatically.
@@ -337,6 +340,9 @@ def verify_in_container(
             full runs.
         language: Explicit language override (``"python"``, ``"js"``,
             ``"ts"``, ``"go"``).  Skips auto-detection.
+        working_dir: Working directory inside the container for test
+            execution.  When ``None``, tests run from the container's
+            default directory (``/home/sandbox``).
 
     Returns:
         JSON string with:
@@ -373,11 +379,12 @@ def verify_in_container(
         })
 
     # --- Language detection ---
-    detected = detect_languages(container, path, language)
+    detected = detect_languages(container, path, language, working_dir=working_dir)
 
     def _run(cmd: str) -> tuple[int, str, str]:
         ec, out = container.exec_run(
             ["/bin/sh", "-c", cmd], stdout=True, stderr=True,
+            workdir=working_dir,
         )
         out_stdout, out_stderr = (
             out if isinstance(out, tuple) else (out, b"")
