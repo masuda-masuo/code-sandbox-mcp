@@ -46,28 +46,46 @@ def resolve_git_root(
     return it unchanged.  When it is the default, try to locate the
     actual git repository root by:
 
+    0. Reading ``~/.sandbox-meta.json`` (written by
+       :func:`sandbox_initialize` after a successful clone)
     1. Testing ``/home/sandbox`` with ``git rev-parse --show-toplevel``
     2. Scanning ``/tmp/repo/*/`` for a git repository
 
-    .. note::
-
-       **Known limitations**
-
-       - ``clone_dest`` override: Step 2 only scans
-         ``/tmp/repo/<name>/`` — if the container was created with a
-         custom ``clone_dest`` outside ``/tmp/repo/``, the repository
-         will not be found and the default ``/home/sandbox`` is returned
-         as fallback.  Pass ``working_dir`` explicitly in that case.
-       - **Multiple repositories**: when ``/tmp/repo/`` contains more
-         than one git repository, the first one found in filesystem
-         iteration order (approximately alphabetical) is returned.
-         This is consistent because a sandbox container is normally
-         scoped to a single clone.
+    Step 0 handles any ``clone_dest`` value and is the primary path.
+    Steps 1-2 are fallbacks for containers that were cloned before the
+    metadata mechanism was introduced.
 
     Returns the resolved path, or *working_dir* as fallback.
     """
     if working_dir != _DEFAULT_WD:
         return working_dir
+
+    # Step 0: container metadata — written by sandbox_initialize after clone
+    ec0, out0 = container.exec_run(
+        ["/bin/sh", "-c",
+         "cat /home/sandbox/.sandbox-meta.json 2>/dev/null || echo __NO_META__"],
+        stdout=True,
+    )
+    if ec0 == 0:
+        _stdout0, _ = (out0 if isinstance(out0, tuple) else (out0, b""))
+        meta_str = _stdout0.decode("utf-8", errors="replace").strip() if _stdout0 else ""
+        if meta_str and meta_str != "__NO_META__":
+            try:
+                meta = json.loads(meta_str)
+                clone_path = meta.get("clone_path", "")
+                if clone_path:
+                    ec_ck, out_ck = container.exec_run(
+                        ["/bin/sh", "-c",
+                         f"cd {shlex.quote(clone_path)} && git rev-parse --show-toplevel 2>/dev/null || echo __NO_REPO__"],
+                        stdout=True,
+                    )
+                    if ec_ck == 0:
+                        _stdout_ck, _ = (out_ck if isinstance(out_ck, tuple) else (out_ck, b""))
+                        verified = _stdout_ck.decode("utf-8", errors="replace").strip() if _stdout_ck else ""
+                        if verified and verified != "__NO_REPO__":
+                            return verified
+            except json.JSONDecodeError:
+                pass
 
     # Step 1: test the default location
     ec, out = container.exec_run(

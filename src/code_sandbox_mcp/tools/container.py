@@ -210,6 +210,26 @@ def _shiori_preclone_exists(clone_repo: str) -> bool:
     return clone_path.is_dir() and (clone_path / ".git").is_dir()
 
 
+def _write_clone_meta(container: Any, clone_path: str) -> None:
+    """Write clone destination path into container metadata.
+
+    The metadata file (``/home/sandbox/.sandbox-meta.json``) is read by
+    :func:`resolve_git_root` to auto-detect the git repository root
+    regardless of the ``clone_dest`` value.
+
+    Failures are logged but not propagated so that a metadata write
+    failure never breaks an otherwise successful clone.
+    """
+    try:
+        safe_path = shlex.quote(clone_path)
+        container.exec_run(
+            ["/bin/sh", "-c",
+             f"mkdir -p /home/sandbox && echo '{{\"clone_path\": {safe_path}}}' > /home/sandbox/.sandbox-meta.json"],
+        )
+    except Exception as e:
+        logger.warning("Failed to write clone meta: %s", e)
+
+
 def _clone_shiori_repo_to_container(
     container: Any,
     container_id: str,
@@ -295,11 +315,14 @@ def _clone_shiori_repo_to_container(
     finally:
         os.unlink(tmp.name)
 
+    clone_path = f"{clone_dest}/{repo_name}"
+    _write_clone_meta(container, clone_path)
+
     record_copy(
         container_id[:12],
         "clone_shiori_repo",
         str(resolved_from),
-        f"{clone_dest}/{repo_name}",
+        clone_path,
     )
 
     # -- Run git fetch --unshallow --
@@ -367,6 +390,7 @@ def _clone_repo_via_network(
         if not inject_vcs_token:
             hint = " (if this is a private repository, retry with inject_vcs_token=True so gh can authenticate)"
         raise RuntimeError(f"gh repo clone failed (exit {exit_code}): {detail}{hint}")
+    _write_clone_meta(container, clone_path)
     return "Cloned {} via network into {} in container {}".format(clone_repo, clone_path, container_id[:12])
 
 
@@ -567,6 +591,8 @@ def _setup_pr_branch(
                 exit_code,
                 (stderr_text or install_output).strip(),
             )
+
+    _write_clone_meta(container, safe_dest)
 
     record_copy(
         cid,
