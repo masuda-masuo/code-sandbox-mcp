@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, patch
 
 from code_sandbox_mcp.tools.vcs import resolve_git_root
@@ -143,3 +144,46 @@ class TestResolveGitRootErrors:
         ])
         result = resolve_git_root(container)
         assert result == "/home/sandbox"
+
+
+class TestWriteMetaRoundTrip:
+    """Verify _write_clone_meta output is consumable by resolve_git_root."""
+
+    def test_meta_json_produced_is_valid_consumable(self) -> None:
+        """Simulate what _write_clone_meta writes, then read by resolve_git_root.
+
+        This ensures the JSON format produced by _write_clone_meta
+        is correctly parsed by resolve_git_root's Step 0.
+        """
+        from code_sandbox_mcp.tools.container import _write_clone_meta
+
+        clone_path = "/custom/dest/my-repo"
+
+        # Capture what _write_clone_meta sends to exec_run
+        container = MagicMock()
+        container.exec_run.return_value = (0, (b"", b""))
+
+        _write_clone_meta(container, clone_path)
+
+        # The command should contain valid JSON with the clone_path
+        cmd = container.exec_run.call_args[0][0][2]
+        assert "mkdir -p /home/sandbox" in cmd
+        # Extract the JSON part from the printf argument
+        assert '{"clone_path": "/custom/dest/my-repo"}' in cmd
+
+    def test_meta_write_then_resolve_round_trip(self) -> None:
+        """Simulate end-to-end: meta written → resolve reads."""
+        clone_path = "/custom/dest/my-repo"
+
+        # Simulate what the container would have after _write_clone_meta
+        meta_json = json.dumps({"clone_path": clone_path}).encode()
+
+        container = _make_container([
+            # Step 0: metadata file read
+            (0, (meta_json + b"\n", b"")),
+            # Verify: git repo check succeeds
+            (0, (clone_path.encode() + b"\n", b"")),
+        ])
+
+        result = resolve_git_root(container)
+        assert result == clone_path

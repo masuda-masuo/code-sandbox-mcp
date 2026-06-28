@@ -221,10 +221,11 @@ def _write_clone_meta(container: Any, clone_path: str) -> None:
     failure never breaks an otherwise successful clone.
     """
     try:
-        safe_path = shlex.quote(clone_path)
+        meta_json = json.dumps({"clone_path": clone_path})
+        safe_meta = shlex.quote(meta_json)
         container.exec_run(
             ["/bin/sh", "-c",
-             f"mkdir -p /home/sandbox && echo '{{\"clone_path\": {safe_path}}}' > /home/sandbox/.sandbox-meta.json"],
+             f"mkdir -p /home/sandbox && printf '%s' {safe_meta} > /home/sandbox/.sandbox-meta.json"],
         )
     except Exception as e:
         logger.warning("Failed to write clone meta: %s", e)
