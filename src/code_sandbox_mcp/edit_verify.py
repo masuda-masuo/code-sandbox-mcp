@@ -1048,9 +1048,11 @@ _RUFF_SECURITY_IGNORE = ",".join([
     "S311",          # random — usually non-security
     "S110", "S112",  # try-except-pass / try-except-continue — style, not security
 ])
-#: Return type for :func:`_determine_scope` — a ``(scope, workdir)`` tuple
-#: with named field access.
 class ScopeWorkdir(NamedTuple):
+    """``(scope, workdir)`` tuple with named field access.
+
+    Return type for :func:`_determine_scope`.
+    """
     scope: str
     workdir: str
 
