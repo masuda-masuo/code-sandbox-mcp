@@ -43,7 +43,6 @@ def _recovery_timeout_from_env() -> float:
 RECOVERY_DOCKER_TIMEOUT: float = _recovery_timeout_from_env()
 
 
-
 def _coerce_list_arg(v: object) -> object:
     """Coerce a JSON-stringified list to list (MCP client serialization workaround, issue #296)."""
     if isinstance(v, str):
