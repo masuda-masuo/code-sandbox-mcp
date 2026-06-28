@@ -1214,18 +1214,16 @@ def _run_tsc_verify(container: Any, path: str) -> VerifyResult:
 
 def _run_pytest_verify(container: Any, path: str) -> VerifyResult:
     """Run pytest --json-report on *path*.  Returns VerifyResult envelope."""
+    from code_sandbox_mcp.test_report import (
+        PytestAdapter,
+        build_pytest_cmd,
+        split_pytest_output,
+    )
     _json_file = "/tmp/_pytest_report.json"
     _raw_file = "/tmp/_pytest_raw.txt"
+    cmd = build_pytest_cmd(_json_file, _raw_file, "", _quote_path(path), _SANDBOX_ENV)
     ec, output = container.exec_run(
-        [
-            "/bin/sh",
-            "-c",
-            f"{_SANDBOX_ENV}python3 -m pytest --json-report --json-report-file={_json_file} "
-            f"-q {_quote_path(path)} >{_raw_file} 2>&1; "
-            f"_ec=$?; cat {_json_file} 2>/dev/null; "
-            f"echo '---PYTEST-RAW---'; tail -n 40 {_raw_file} 2>/dev/null; "
-            f"rm -f {_json_file} {_raw_file}; exit $_ec",
-        ],
+        ["/bin/sh", "-c", cmd],
         stdout=True,
         stderr=True,
     )
@@ -1241,10 +1239,7 @@ def _run_pytest_verify(container: Any, path: str) -> VerifyResult:
 
     stdout_text = stdout_part.decode("utf-8", errors="replace") if stdout_part else ""
 
-    # Split at the raw marker: JSON part first, raw tail for fallback
-    parts = stdout_text.split("---PYTEST-RAW---", 1)
-    json_part = parts[0].strip() if parts else ""
-    raw_tail = parts[1].strip() if len(parts) > 1 else ""
+    json_part, raw_tail = split_pytest_output(stdout_text)
 
     if not json_part:
         detail = "no test output produced"
@@ -1253,8 +1248,6 @@ def _run_pytest_verify(container: Any, path: str) -> VerifyResult:
         return _envelope_skipped("pytest", detail)
 
     try:
-        from code_sandbox_mcp.test_report import PytestAdapter
-
         report = PytestAdapter.parse_json(json_part)
         d = report.to_dict()
         status = d.get("status", "ok")

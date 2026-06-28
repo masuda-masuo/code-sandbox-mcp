@@ -394,16 +394,14 @@ def verify_in_container(
 
     # --- Run pytest ---
     def _run_pytest(filter_args: str) -> dict:
+        from code_sandbox_mcp.test_report import (
+            PytestAdapter,
+            build_pytest_cmd,
+            split_pytest_output,
+        )
         _json_file = "/tmp/_pytest_report.json"
         _raw_file = "/tmp/_pytest_raw.txt"
-        full_cmd = (
-            f"{_SANDBOX_ENV}python3 -m pytest --json-report "
-            f"--json-report-file={_json_file} -q{filter_args} "
-            f"{_quote_path(path)} >{_raw_file} 2>&1; "
-            f"_ec=$?; cat {_json_file} 2>/dev/null; "
-            f"echo '---PYTEST-RAW---'; tail -n 40 {_raw_file} 2>/dev/null; "
-            f"rm -f {_json_file} {_raw_file}; exit $_ec"
-        )
+        full_cmd = build_pytest_cmd(_json_file, _raw_file, filter_args, path, _SANDBOX_ENV)
         ec, stdout_text, stderr_text = _run(full_cmd)
 
         if ec == 127:
@@ -413,16 +411,12 @@ def verify_in_container(
 
         stdout_text_s = stdout_text if isinstance(stdout_text, str) else ""
 
-        # Split at the raw marker: JSON part first, raw tail for fallback
-        parts = stdout_text_s.split("---PYTEST-RAW---", 1)
-        json_part = parts[0].strip() if parts else ""
-        raw_tail = parts[1].strip() if len(parts) > 1 else ""
+        json_part, raw_tail = split_pytest_output(stdout_text_s)
 
         if not json_part:
             return {"status": "no_tests", "error": "no test output produced", "raw_output": raw_tail}
 
         try:
-            from code_sandbox_mcp.test_report import PytestAdapter
             report = PytestAdapter.parse_json(json_part)
             d = report.to_dict()
             return d

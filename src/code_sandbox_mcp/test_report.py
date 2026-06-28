@@ -9,8 +9,57 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 from dataclasses import asdict, dataclass
 from typing import Any
+
+# ---------------------------------------------------------------------------
+# Shared test-runner helpers
+# ---------------------------------------------------------------------------
+
+#: Marker used by :func:`_build_pytest_cmd` to separate JSON report from
+#: raw pytest output in the combined stdout stream.
+PYTEST_RAW_MARKER = "---PYTEST-RAW---"
+_PYTEST_RAW_LINES = 40
+
+
+def build_pytest_cmd(
+    json_file: str,
+    raw_file: str,
+    filter_args: str,
+    path: str,
+    sandbox_env: str = "",
+) -> str:
+    """Build a pytest --json-report command that emits JSON + raw tail.
+
+    The command writes JSON report to *json_file*, captures full raw
+    output to *raw_file*, then prints the JSON followed by
+    :data:`PYTEST_RAW_MARKER` and the last :data:`_PYTEST_RAW_LINES`
+    lines of raw output.  Both temp files are cleaned up on exit.
+
+    Callers should split the result with :func:`split_pytest_output`.
+    """
+    quoted_path = shlex.quote(path)
+    return (
+        f"{sandbox_env}python3 -m pytest --json-report "
+        f"--json-report-file={json_file} -q{filter_args} "
+        f"{quoted_path} >{raw_file} 2>&1; "
+        f"_ec=$?; cat {json_file} 2>/dev/null; "
+        f"echo '{PYTEST_RAW_MARKER}'; tail -n {_PYTEST_RAW_LINES} {raw_file} 2>/dev/null; "
+        f"rm -f {json_file} {raw_file}; exit $_ec"
+    )
+
+
+def split_pytest_output(stdout_text: str) -> tuple[str, str]:
+    """Split combined stdout at :data:`PYTEST_RAW_MARKER`.
+
+    Returns ``(json_part, raw_tail)``.  Either may be empty.
+    """
+    parts = stdout_text.split(PYTEST_RAW_MARKER, 1)
+    json_part = parts[0].strip() if parts else ""
+    raw_tail = parts[1].strip() if len(parts) > 1 else ""
+    return json_part, raw_tail
+
 
 # ---------------------------------------------------------------------------
 # Common schema
