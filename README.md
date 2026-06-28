@@ -150,7 +150,7 @@ Sends OS desktop notifications (Linux) or webhook notifications on boundary-cros
 | Tool | Description |
 |------|-------------|
 | `search_in_container` | Search for text patterns across files. Lexical (ripgrep) or structural (ast-grep) mode. |
-| `lint_in_container` | Run linter on a file (`.py` → ruff/pylint, `.js/.ts/.jsx/.tsx` → eslint). |
+| `lint_in_container` | Run linter on a file (`.py` → ruff/pylint, `.js/.ts/.jsx/.tsx` → eslint). Pass `fix=True` to apply `ruff check --fix` / `eslint --fix` autofixes and return the remaining findings. |
 | `type_check_in_container` | Run type checker on a file (`.py` → pyright, `.ts/.tsx` → tsc). |
 | `verify_in_container` | **Pre-publish test gate.** Run pytest with optional filter, then auto-full-suite. Returns diff summary. |
 
