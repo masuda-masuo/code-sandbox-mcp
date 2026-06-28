@@ -56,7 +56,7 @@ from code_sandbox_mcp.security import (
     validate_image_ref,
 )
 from code_sandbox_mcp.tools.common import RECOVERY_DOCKER_TIMEOUT, _coerce_list_arg, _docker
-from code_sandbox_mcp.tools.vcs import checkpoint_list
+from code_sandbox_mcp.tools.vcs import checkpoint_list, resolve_git_root
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -851,6 +851,7 @@ def sandbox_stop(
 
     # Check for unpushed checkpoints (Issue #264) — reuse checkpoint_list
     if not force:
+        working_dir = resolve_git_root(container, working_dir)
         result = json.loads(checkpoint_list(container_id, working_dir))
         checkpoints = result.get("checkpoints", [])
         if checkpoints:
