@@ -94,7 +94,7 @@ jobs:
           RUN mv /usr/bin/rg /usr/bin/rg.bak
           USER sandbox
           HEALTHCHECK --interval=5s --timeout=3s --retries=2 \
-            CMD rg --version && sg --version && semgrep --version && node --version || exit 1
+            CMD rg --version && sg --version && node --version || exit 1
           DOCKERFILE
           CID=$(docker run -d "broken-base" sleep 30)
           for i in $(seq 1 7); do

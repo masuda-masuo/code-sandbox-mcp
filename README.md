@@ -198,7 +198,6 @@ The default image is a purpose-built sandbox image pushed to GHCR. It bundles al
 | Symbols | `universal-ctags` | Code indexing |
 | Lint | `ruff` | Python linting |
 | Type check | `pyright` | Python type checking |
-| Security | `semgrep` | Static analysis |
 | VCS | `git`, `gh` | Version control, GitHub CLI |
 | Package install | `uv` | Fast pip alternative |
 | JSON | `jq` | JSON processing |

@@ -94,7 +94,7 @@ jobs:
 
           ### 効果
 
-          - 既定コンテナに git / gh / uv / ripgrep / ruff / pyright / semgrep が同梱される
+          - 既定コンテナに git / gh / uv / ripgrep / ruff / pyright が同梱される
           - 既定ユーザーが \`nobody\` → \`sandbox\` に変わる
           - \`allow_network=True\` + \`inject_vcs_token=True\` で VCS 操作（\`gh issue view\` 等）が通るようになる
           - #55（issue_view + submit）の実装前提が整う

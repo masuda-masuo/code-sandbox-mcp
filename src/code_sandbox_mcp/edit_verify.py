@@ -1482,38 +1482,6 @@ def _run_go_test_verify(container: Any, path: str) -> VerifyResult:
         return _envelope_error("go test", detail, ec)
 
 
-def _run_semgrep_verify(container: Any, path: str, lang_config: str = "p/python") -> VerifyResult:
-    """Run semgrep scan on *path* with language-specific config."""
-    ec, output = container.exec_run(
-        [
-            "/bin/sh",
-            "-c",
-            f"{_SANDBOX_ENV}semgrep scan --config {lang_config} --config p/security-audit "
-            f"--json {_quote_path(path)}",
-        ],
-        stdout=True,
-        stderr=True,
-    )
-    stdout_part, stderr_part = output if isinstance(output, tuple) else (output, b"")
-    stderr_text = stderr_part.decode("utf-8", errors="replace") if stderr_part else ""
-
-    if ec == 127:
-        return _envelope_not_available("semgrep", "semgrep not installed in container")
-    if ec not in (0, 1, 2):
-        # semgrep exit 2 = findings found (normal)
-        return _envelope_error("semgrep", stderr_text.strip() or f"exit code {ec}", ec)
-
-    stdout_text = stdout_part.decode("utf-8", errors="replace") if stdout_part else ""
-    findings = _parse_semgrep_output(stdout_text, path)
-    if not findings and stdout_text.strip() and ec >= 2:
-        return _envelope_error(
-            "semgrep",
-            f"parse error: semgrep output was non-empty but could not be parsed (exit {ec})",
-            ec,
-        )
-    return _envelope_ok("semgrep", findings, ec)
-
-
 # ---------------------------------------------------------------------------
 # Unified dispatch table
 # ---------------------------------------------------------------------------
@@ -2085,11 +2053,9 @@ def run_verify(
     gate_on_lint_error: bool = True,
     gate_on_type_error: bool = False,
     gate_on_test_fail: bool = True,
-    gate_on_scan_error: bool = True,
-    gate_on_scan_warning: bool = False,
     language: str | None = None,
 ) -> dict[str, Any]:
-    """Run lint + type_check + test + scan with language-aware dispatch.
+    """Run lint + type_check + test with language-aware dispatch.
 
     Detects project languages from *path* (or uses explicit *language=*
     parameter), dispatches each verification layer to the appropriate
@@ -2122,10 +2088,6 @@ def run_verify(
             (default ``False``).
         gate_on_test_fail: Whether test failures fail the gate
             (default ``True``).
-        gate_on_scan_error: Whether semgrep ERROR findings fail the gate
-            (default ``True``).
-        gate_on_scan_warning: Whether semgrep WARNING findings fail the gate
-            (default ``False``).
         language: Explicit language override (``"python"``, ``"js"``,
             ``"ts"``, ``"go"``).  Skips auto-detection.
 
@@ -2424,36 +2386,3 @@ def _flatten_test_layer(results: list[VerifyResult]) -> dict[str, Any]:
         return {"status": "skipped", "message": "no test output"}
 
     return merged
-
-
-# ---------------------------------------------------------------------------
-# Semgrep output parser
-# ---------------------------------------------------------------------------
-
-
-def _parse_semgrep_output(raw: str, file_path: str) -> list[dict[str, Any]]:
-    """Parse ``semgrep scan --json`` output into the common format.
-
-    Each result includes ``severity`` (``ERROR`` / ``WARNING`` / ``INFO``)
-    directly from semgrep's output.
-    """
-    raw = raw.strip()
-    if not raw:
-        return []
-    try:
-        data = json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
-        return []
-
-    results: list[dict[str, Any]] = []
-    for finding in data.get("results", []):
-        results.append(
-            {
-                "file": finding.get("path", file_path),
-                "line": int(finding.get("start", {}).get("line", 0)),
-                "rule": finding.get("check_id", "unknown"),
-                "severity": finding.get("extra", {}).get("severity", "WARNING"),
-                "message": finding.get("extra", {}).get("message", ""),
-            }
-        )
-    return results
