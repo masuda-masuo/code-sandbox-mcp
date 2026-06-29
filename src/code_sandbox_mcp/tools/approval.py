@@ -32,6 +32,7 @@ def sandbox_approval_status() -> str:
     pending = get_pending_tokens()
     now = time.monotonic()
     for p in pending:
+        p = dict(p)
         p["remaining_seconds"] = max(
             0,
             int(p["ttl_seconds"] - (now - p["created_at"])),
