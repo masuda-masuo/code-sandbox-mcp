@@ -36,6 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fd-find \
     jq \
     universal-ctags \
+    patch \
     libatomic1 \
   && rm -rf /var/lib/apt/lists/*
 
