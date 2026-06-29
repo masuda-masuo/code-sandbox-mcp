@@ -145,7 +145,7 @@ def _build_near_miss_echo(existing: str, old_str: str, dest_path: str) -> str:
     """Build a near-miss error message with diff, context, and indentation hints.
 
     Uses a sliding-window line match to find the most similar region,
-    shows at most 4 lines of unified diff, 3 lines of surrounding
+    shows at most 6 lines of unified diff, 3 lines of surrounding
     context, and explicitly flags indentation mismatches.
     """
     existing_lines = existing.splitlines()
@@ -183,7 +183,7 @@ def _build_near_miss_echo(existing: str, old_str: str, dest_path: str) -> str:
         context_lines.append(f"{prefix} {i + 1:4d} | {existing_lines[i]}")
     context_block = "\n".join(context_lines)
 
-    # --- unified diff (limited to 4 lines) ---
+    # --- unified diff (limited to 6 lines) ---
     matched_lines = existing_lines[best_start:best_end] if best_end > best_start else []
     diff_lines = list(
         difflib.unified_diff(
