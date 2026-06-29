@@ -16,7 +16,6 @@
 #   テキスト置換: sd
 #   ファイル検索: fd
 #   シンボル    : universal-ctags
-#   セキュリティ: semgrep        ← 多言語スキャナ（横断インフラ）
 #   VCS         : git, gh
 #   高速install : uv
 #   JSON処理    : jq
@@ -92,9 +91,6 @@ RUN set -ex; \
       | tar -xz -C /usr/local/bin/ --strip-components=1 "sd-v${SD_VERSION}-${SD_TRIPLE}/sd" \
     && chmod +x /usr/local/bin/sd
 
-# ── semgrep (多言語スキャナ = 横断インフラ。システムワイド) ──────────
-RUN uv pip install --system semgrep
-
 # ── 非 root ユーザ (§2.1 静的ガードレール: 非 root 実行を既定強制) ──
 RUN groupadd -r sandbox && useradd -r -g sandbox -m -d /home/sandbox sandbox
 
@@ -109,6 +105,6 @@ ENV PATH="/home/sandbox/.local/bin:${PATH}"
 
 # ── ヘルスチェック (base が保有するツールのみ) ────────────────────
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-  CMD rg --version && sg --version && semgrep --version && node --version || exit 1
+  CMD rg --version && sg --version && node --version || exit 1
 
 CMD ["bash"]
