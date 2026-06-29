@@ -1547,7 +1547,7 @@ def run_container_and_exec(
 
     # Cache the result (skip for volatile commands)
     if is_cacheable(commands):
-        cache_key = compute_cache_key(resolved, commands, input_hash=input_hash)
+        cache_key = compute_cache_key(resolved, commands, input_hash=input_hash, container_id=container_id[:12])
         set_cached_result(cache_key, result)
 
     journal_record_exec(
@@ -1690,7 +1690,7 @@ def rerun_failed(
 
     # Store new result in cache (skip for volatile commands)
     if is_cacheable(target_commands):
-        new_cache_key = compute_cache_key(image_ref, target_commands, input_hash=input_hash)
+        new_cache_key = compute_cache_key(image_ref, target_commands, input_hash=input_hash, container_id=container_id[:12])
         set_cached_result(new_cache_key, result)
 
     journal_record_exec(
@@ -1717,6 +1717,12 @@ def sandbox_exec_diff(
 
     First execution stores the result in cache.  Subsequent calls
     with the same container_id and commands return only what changed.
+
+    .. note::
+
+       Volatile commands (git diff/status/add, mutable-file operations)
+       are **never cached**, so repeated calls to them always return
+       the fresh result with ``has_diff=False``.
 
     Args:
         container_id: 12-character container ID prefix.
@@ -1745,7 +1751,7 @@ def sandbox_exec_diff(
     except Exception:
         image_ref = container_id[:12]
     cacheable = is_cacheable(commands)
-    cache_key = "diff:" + compute_cache_key(image_ref, commands, input_hash=input_hash)
+    cache_key = "diff:" + compute_cache_key(image_ref, commands, input_hash=input_hash, container_id=container_id[:12])
 
     if cacheable:
         previous = get_cached_result(cache_key)

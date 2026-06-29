@@ -178,7 +178,7 @@ def sandbox_exec(
     # be cached — their output depends on the current working-tree / index
     # state (issue #329 P1/P2/P4).
     cacheable = is_cacheable(cache_subject)
-    cache_key = compute_cache_key(image_ref, cache_subject, input_hash=input_hash)
+    cache_key = compute_cache_key(image_ref, cache_subject, input_hash=input_hash, container_id=container_id[:12])
 
     if cacheable:
         cached = get_cached_result(cache_key)

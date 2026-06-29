@@ -350,15 +350,15 @@ class TestIsCacheable:
         from code_sandbox_mcp.result_cache import is_cacheable
         assert is_cacheable(["pip install -e .[dev]"]) is True
 
-    def test_python_is_cacheable(self):
+    def test_python_is_not_cacheable(self):
         from code_sandbox_mcp.result_cache import is_cacheable
-        assert is_cacheable(["python -m pytest tests/"]) is True
-        assert is_cacheable(["python3 script.py"]) is True
+        assert is_cacheable(["python -m pytest tests/"]) is False
+        assert is_cacheable(["python3 script.py"]) is False
 
     def test_npm_is_cacheable(self):
         from code_sandbox_mcp.result_cache import is_cacheable
         assert is_cacheable(["npm install"]) is True
-        assert is_cacheable(["npx jest"]) is True
+        assert is_cacheable(["npx jest"]) is False
 
     def test_apt_get_is_cacheable(self):
         from code_sandbox_mcp.result_cache import is_cacheable
@@ -369,33 +369,33 @@ class TestIsCacheable:
         assert is_cacheable(["go build ./..."]) is True
         assert is_cacheable(["cargo build --release"]) is True
 
-    def test_gcc_is_cacheable(self):
+    def test_gcc_is_not_cacheable(self):
         from code_sandbox_mcp.result_cache import is_cacheable
-        assert is_cacheable(["gcc -o prog main.c"]) is True
+        assert is_cacheable(["gcc -o prog main.c"]) is False
 
-    def test_make_is_cacheable(self):
+    def test_make_is_not_cacheable(self):
         from code_sandbox_mcp.result_cache import is_cacheable
-        assert is_cacheable(["make install"]) is True
+        assert is_cacheable(["make install"]) is False
 
-    def test_curl_is_cacheable(self):
+    def test_curl_is_not_cacheable(self):
         from code_sandbox_mcp.result_cache import is_cacheable
-        assert is_cacheable(["curl -s https://example.com"]) is True
+        assert is_cacheable(["curl -s https://example.com"]) is False
 
-    def test_pytest_is_cacheable(self):
+    def test_pytest_is_not_cacheable(self):
         from code_sandbox_mcp.result_cache import is_cacheable
-        assert is_cacheable(["pytest tests/"]) is True
+        assert is_cacheable(["pytest tests/"]) is False
 
-    def test_ruff_is_cacheable(self):
+    def test_ruff_is_not_cacheable(self):
         from code_sandbox_mcp.result_cache import is_cacheable
-        assert is_cacheable(["ruff check src/"]) is True
+        assert is_cacheable(["ruff check src/"]) is False
 
-    def test_docker_is_cacheable(self):
+    def test_docker_is_not_cacheable(self):
         from code_sandbox_mcp.result_cache import is_cacheable
-        assert is_cacheable(["docker build -t img ."]) is True
+        assert is_cacheable(["docker build -t img ."]) is False
 
-    def test_gh_is_cacheable(self):
+    def test_gh_is_not_cacheable(self):
         from code_sandbox_mcp.result_cache import is_cacheable
-        assert is_cacheable(["gh pr list"]) is True
+        assert is_cacheable(["gh pr list"]) is False
 
     # --- P4: Compound commands ---
 
@@ -406,7 +406,8 @@ class TestIsCacheable:
 
     def test_compound_all_cacheable_is_cacheable(self):
         from code_sandbox_mcp.result_cache import is_cacheable
-        assert is_cacheable(["cd /repo && pip install -e .[dev] && python -m pytest tests/"]) is True
+        # python is volatile, so the whole chain is non-cacheable
+        assert is_cacheable(["cd /repo && pip install -e .[dev] && python -m pytest tests/"]) is False
 
     def test_pipe_with_volatile_is_not_cacheable(self):
         from code_sandbox_mcp.result_cache import is_cacheable
@@ -434,16 +435,17 @@ class TestIsCacheable:
         from code_sandbox_mcp.result_cache import is_cacheable
         assert is_cacheable(["GIT_DIR=/tmp git add foo.py"]) is False
 
-    def test_unknown_program_is_cacheable(self):
+    def test_unknown_program_is_not_cacheable(self):
         from code_sandbox_mcp.result_cache import is_cacheable
-        # Unknown programs are cacheable by default (deny-list only)
-        # — scripts, wrappers, and custom binaries produce
-        # deterministic output for a given input.
-        assert is_cacheable(["my-custom-tool arg1"]) is True
+        # Unknown programs are default-deny (volatile)
+        # — scripts, wrappers, and custom binaries cannot be trusted
+        # to produce deterministic output.
+        assert is_cacheable(["my-custom-tool arg1"]) is False
 
-    def test_script_with_dot_prefix_is_cacheable(self):
+    def test_script_with_dot_prefix_is_not_cacheable(self):
         from code_sandbox_mcp.result_cache import is_cacheable
-        assert is_cacheable(["./run_tests.sh"]) is True
+        # Unknown scripts are default-deny (volatile)
+        assert is_cacheable(["./run_tests.sh"]) is False
 
 
 class TestSplitCompoundCommands:
@@ -480,6 +482,31 @@ class TestSplitCompoundCommands:
         assert result == []
 
 
+
+class TestSplitCompoundQuoted:
+    """Tests for quote-aware compound command splitting."""
+
+    def test_quoted_semicolon_not_split(self):
+        from code_sandbox_mcp.result_cache import _split_compound_commands
+        # echo "a; b" should not be split on ;
+        result = _split_compound_commands('echo "a; b"')
+        assert result == ['echo "a; b"']
+
+    def test_quoted_ampersand_not_split(self):
+        from code_sandbox_mcp.result_cache import _split_compound_commands
+        result = _split_compound_commands("echo 'a && b'")
+        assert result == ["echo 'a && b'"]
+
+    def test_quoted_pipe_not_split(self):
+        from code_sandbox_mcp.result_cache import _split_compound_commands
+        result = _split_compound_commands('echo "a | b"')
+        assert result == ['echo "a | b"']
+
+    def test_command_substitution_not_split(self):
+        from code_sandbox_mcp.result_cache import _split_compound_commands
+        result = _split_compound_commands("echo $(git rev-parse HEAD)")
+        assert result == ["echo $(git rev-parse HEAD)"]
+
 class TestFirstProgram:
     """Tests for _first_program helper."""
 
@@ -508,23 +535,22 @@ class TestFirstProgram:
         assert _first_program("A=1 B=2") == ""
 
 
-class TestComputeCacheKeyWorkspaceFingerprint:
-    """Tests for workspace fingerprint in cache key (issue #329 P3)."""
+class TestComputeCacheKeyContainerId:
+    """Tests for container_id in cache key (issue #329 P3)."""
 
-    def test_fingerprint_affects_key(self):
+    def test_container_id_affects_key(self):
         from code_sandbox_mcp.result_cache import compute_cache_key
-        k1 = compute_cache_key("img", ["cmd"], workspace_fingerprint="abc")
-        k2 = compute_cache_key("img", ["cmd"], workspace_fingerprint="def")
+        k1 = compute_cache_key("img", ["cmd"], container_id="abc123")
+        k2 = compute_cache_key("img", ["cmd"], container_id="def456")
         assert k1 != k2
 
-    def test_no_fingerprint_still_works(self):
+    def test_no_container_id_still_works(self):
         from code_sandbox_mcp.result_cache import compute_cache_key
         key = compute_cache_key("img", ["cmd"])
         assert len(key) == 64
 
-    def test_empty_fingerprint_equivalent_to_omitted(self):
+    def test_empty_container_id_equivalent_to_omitted(self):
         from code_sandbox_mcp.result_cache import compute_cache_key
-        k1 = compute_cache_key("img", ["cmd"], workspace_fingerprint="")
+        k1 = compute_cache_key("img", ["cmd"], container_id="")
         k2 = compute_cache_key("img", ["cmd"])
         assert k1 == k2
-

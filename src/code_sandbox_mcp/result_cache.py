@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import threading
 import time
 from pathlib import Path
@@ -96,27 +95,79 @@ _VOLATILE_NON_GIT_PROGRAMS: frozenset[str] = frozenset({
 
 # Commands that are known to be safe to cache (non-volatile builds/installs).
 # Used as an allow-list for programs we don't recognise otherwise.
+# Programs that are deterministic enough to cache (issue #329).
+# Only these non-git programs are cached; everything else is default-deny.
+# Package managers are included because the cache is namespaced by
+# container_id, and re-installing the same packages is expensive.
 _CACHEABLE_PROGRAMS: frozenset[str] = frozenset({
-    "cd",  # shell builtin (no-output navigation)
-    "echo", "printf",
-    "pip", "pip3", "python", "python3",
-    "npm", "npx", "yarn", "pnpm",
+    # Shell builtins (no side effects, deterministic output)
+    "cd", "echo", "printf", "true", "false", "test",
+    # Package managers (expensive, worth caching per container)
+    "pip", "pip3",
+    "npm", "yarn", "pnpm",
     "apt-get", "apt", "dpkg",
     "yum", "dnf", "rpm",
-    "go", "cargo", "rustup",
-    "gcc", "g++", "clang", "clang++",
-    "make", "cmake", "ninja",
     "gem", "bundle",
-    "curl", "wget",
-    "pytest", "ruff", "pyright", "eslint", "mypy",
-    "npx", "tsc", "node",
-    "systemctl", "docker", "gh",
+    # Go / Rust toolchains
+    "go", "cargo", "rustup",
 })
 
 
 def _split_compound_commands(cmd: str) -> list[str]:
-    """Split *cmd* on ``&&``, ``;``, ``||``, and ``|`` boundaries."""
-    parts = re.split(r"&&|\|\||[;&|]", cmd)
+    """Split *cmd* on ``&&``, ``;``, ``||``, and ``|`` boundaries.
+
+    Single/double-quoted regions are skipped so that
+    e.g. ``echo "a; b"`` is not split on ``;``.
+    """
+    parts = []
+    current = ""
+    in_single = False
+    in_double = False
+    i = 0
+    while i < len(cmd):
+        ch = cmd[i]
+        if in_single:
+            current += ch
+            if ch == "'":
+                in_single = False
+            i += 1
+            continue
+        if in_double:
+            current += ch
+            if ch == '"':
+                in_double = False
+            i += 1
+            continue
+        if ch == "'":
+            in_single = True
+            current += ch
+            i += 1
+            continue
+        if ch == '"':
+            in_double = True
+            current += ch
+            i += 1
+            continue
+        # Separators: &&, ||, ;, |
+        if cmd[i:i+2] == "&&":
+            parts.append(current)
+            current = ""
+            i += 2
+            continue
+        if cmd[i:i+2] == "||":
+            parts.append(current)
+            current = ""
+            i += 2
+            continue
+        if ch in (";", "&", "|"):
+            parts.append(current)
+            current = ""
+            i += 1
+            continue
+        current += ch
+        i += 1
+    if current:
+        parts.append(current)
     return [p.strip() for p in parts if p.strip()]
 
 
@@ -136,7 +187,6 @@ def _first_program(sub: str) -> str:
     # Strip leading ./ ../ prefixes
     while prog.startswith("../") or prog.startswith("./"):
         prog = prog[2:] if prog.startswith("./") else prog[3:]
-        # Re-check after stripping
     return prog.rsplit("/", 1)[-1]
 
 
@@ -180,11 +230,11 @@ def is_cacheable(commands: list[str]) -> bool:
                         if tokens[git_cmd_idx] in _VOLATILE_GIT_COMMANDS:
                             return False
                 continue
-            # P2: Non-git volatile programs (deny-list only).
-            # Unknown programs (scripts, tool wrappers, custom
-            # binaries) are treated as potentially cacheable —
-            # they produce deterministic output for a given input.
-            if prog in _VOLATILE_NON_GIT_PROGRAMS:
+            # P2: Non-git programs.  Default-deny — only programs
+            # explicitly listed in _CACHEABLE_PROGRAMS are cached.
+            # Unknown programs (scripts, wrappers, custom binaries)
+            # are conservatively treated as volatile (issue #329).
+            if prog not in _CACHEABLE_PROGRAMS:
                 return False
     return True
 
@@ -193,7 +243,7 @@ def compute_cache_key(
     image: str,
     commands: list[str],
     input_hash: str = "",
-    workspace_fingerprint: str = "",
+    container_id: str = "",
 ) -> str:
     """Compute a content-addressable cache key.
 
@@ -201,17 +251,16 @@ def compute_cache_key(
         image: Docker image reference (e.g. ``python@sha256:abcd``).
         commands: List of shell commands.
         input_hash: Optional hash of any input data that affects output.
-        workspace_fingerprint: Optional hash of workspace state
-            (e.g. ``git rev-parse HEAD`` + ``git status --porcelain``)
-            to namespace the cache key per working-tree state
-            (issue #329 § P3).
+        container_id: Container ID to namespace keys per container
+            so identical commands in different containers never
+            collide (issue #329).
 
     Returns:
         Hex digest suitable for use as a cache filename.
     """
     parts = [image, json.dumps(commands, sort_keys=True), input_hash]
-    if workspace_fingerprint:
-        parts.append(workspace_fingerprint)
+    if container_id:
+        parts.append(container_id)
     canonical = "\0".join(parts)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
