@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 from typing import Annotated
 
@@ -46,6 +47,12 @@ def _get_installed_packages(container_id: str) -> list[dict[str, str]]:
 
 def _package_to_key(pkg: dict[str, str]) -> str:
     return f"{pkg['name']}=={pkg.get('version', '?')}"
+
+
+@functools.lru_cache(maxsize=None)
+def _has_uv(container_id: str) -> bool:
+    ec, _, _ = _run_in_container(container_id, ["which", "uv"])
+    return ec == 0
 
 
 def package_install(
@@ -125,7 +132,8 @@ def package_install(
         })
 
     # --- Build pip command ---
-    pip_args: list[str] = ["pip", "install"]
+    use_uv = _has_uv(container_id)
+    pip_args: list[str] = ["uv", "pip", "install"] if use_uv else ["pip", "install"]
 
     if upgrade:
         pip_args.append("--upgrade")
