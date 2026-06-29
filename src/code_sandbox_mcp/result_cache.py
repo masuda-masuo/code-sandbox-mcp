@@ -43,11 +43,222 @@ def _ensure_cache_dir() -> None:
 # Cache key computation
 # ---------------------------------------------------------------------------
 
+# --- Volatile command detection (issue #329) ---
+
+# Git subcommands whose output or side effects depend on the
+# working-tree / index / HEAD state.  Caching these returns
+# stale results from a potentially different context
+# (issue #329 § P1).
+_VOLATILE_GIT_COMMANDS: frozenset[str] = frozenset({
+    # Mutating — change repository state
+    "add", "rm", "mv",
+    "commit",
+    "checkout", "switch",
+    "merge",
+    "rebase",
+    "stash",
+    "reset",
+    "clean",
+    "cherry-pick", "cherry",
+    "revert",
+    "am",
+    "bisect",
+    "clone", "init",
+    "fetch", "pull", "push",
+    "remote",
+    "submodule",
+    "worktree",
+    "tag",                               # creating / deleting tags
+    "branch",                            # creating / deleting branches
+    # Inspecting — output reflects current state
+    "diff",
+    "status",
+    "log",
+    "show",
+    "blame",
+    "describe",
+    "rev-parse", "rev-list",
+    "ls-files", "ls-tree",
+    "grep",
+    "shortlog",
+    "whatchanged",
+})
+
+# Non-git commands that depend on or mutate mutable filesystem state
+# and should not be cached (issue #329 § P2).
+_VOLATILE_NON_GIT_PROGRAMS: frozenset[str] = frozenset({
+    "ls", "cat", "stat", "file", "find",
+    "du", "df", "wc", "head", "tail",
+    "touch", "mkdir", "rmdir", "chmod", "chown",
+    "cp", "mv", "rm",
+})
+
+# Commands that are known to be safe to cache (non-volatile builds/installs).
+# Used as an allow-list for programs we don't recognise otherwise.
+# Programs that are deterministic enough to cache (issue #329).
+# Only these non-git programs are cached; everything else is default-deny.
+# Package managers are cacheable as a deliberate tradeoff:
+# they are expensive to re-run and usually deterministic for
+# a given manifest (requirements.txt / package.json / Cargo.toml).
+# Stale "ok" on manifest edit is a known risk — the cache key
+# is namespaced by container_id and expires at TTL (7 days).
+# If the manifest changes, use input_hash to force a new key.
+_CACHEABLE_PROGRAMS: frozenset[str] = frozenset({
+    # Shell builtins (no side effects, deterministic output)
+    "cd", "echo", "printf", "true", "false", "test",
+    # Package managers (expensive, worth caching per container)
+    "pip", "pip3",
+    "npm", "yarn", "pnpm",
+    "apt-get", "apt", "dpkg",
+    "yum", "dnf", "rpm",
+    "gem", "bundle",
+})
+
+
+def _split_compound_commands(cmd: str) -> list[str]:
+    """Split *cmd* on ``&&``, ``;``, ``||``, and ``|`` boundaries.
+
+    Single/double-quoted regions are skipped so that
+    e.g. ``echo "a; b"`` is not split on ``;``.
+    """
+    parts = []
+    current = ""
+    in_single = False
+    in_double = False
+    i = 0
+    while i < len(cmd):
+        ch = cmd[i]
+        if in_single:
+            current += ch
+            if ch == "'":
+                in_single = False
+            i += 1
+            continue
+        if in_double:
+            current += ch
+            if ch == '"':
+                in_double = False
+            i += 1
+            continue
+        if ch == "'":
+            in_single = True
+            current += ch
+            i += 1
+            continue
+        if ch == '"':
+            in_double = True
+            current += ch
+            i += 1
+            continue
+        # Separators: &&, ||, ;, |
+        if cmd[i:i+2] == "&&":
+            parts.append(current)
+            current = ""
+            i += 2
+            continue
+        if cmd[i:i+2] == "||":
+            parts.append(current)
+            current = ""
+            i += 2
+            continue
+        if ch == "$" and i + 1 < len(cmd) and cmd[i + 1] == "(":
+            # $(...) command substitution — treat as quoted block
+            current += ch
+            i += 1
+            depth = 1
+            while i < len(cmd) and depth > 0:
+                if cmd[i] == "(":
+                    depth += 1
+                elif cmd[i] == ")":
+                    depth -= 1
+                current += cmd[i]
+                i += 1
+            continue
+        if ch in (";", "&", "|"):
+            parts.append(current)
+            current = ""
+            i += 1
+            continue
+        current += ch
+        i += 1
+    if current:
+        parts.append(current)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _first_program(sub: str) -> str:
+    """Return the program name from a subcommand string.
+
+    Strips leading variable assignments (``VAR=val``) and returns
+    the bare program name without flags or path components.
+    """
+    tokens = sub.strip().split()
+    idx = 0
+    while idx < len(tokens) and "=" in tokens[idx] and not tokens[idx].startswith("-"):
+        idx += 1
+    if idx >= len(tokens):
+        return ""
+    prog = tokens[idx]
+    # Strip leading ./ ../ prefixes
+    while prog.startswith("../") or prog.startswith("./"):
+        prog = prog[2:] if prog.startswith("./") else prog[3:]
+    return prog.rsplit("/", 1)[-1]
+
+
+def is_cacheable(commands: list[str]) -> bool:
+    """Check whether *commands* can safely be cached (issue #329).
+
+    Returns ``False`` for:
+
+    * **Git subcommands** that mutate or inspect repository state
+      (e.g. ``git add``, ``git diff``, ``git status``, ``git commit``)
+      — :issue:`329` § P1.
+    * **Non-git volatile programs** that read or write mutable files
+      (e.g. ``ls``, ``cat``, ``rm``, ``touch``) when they appear
+      outside a known-cacheable pipeline — :issue:`329` § P2.
+    * **Compound commands** (``&&`` / ``;`` / ``||`` chaining or pipes)
+      where **any** subcommand is volatile — caching the chain would
+      skip the side-effect subcommands as well — :issue:`329` § P4.
+    """
+    for cmd in commands:
+        stripped = cmd.strip()
+        if not stripped:
+            continue
+        # P4: Split on &&, ;, ||, and | — if any subcommand is
+        # volatile the whole chain is non-cacheable.
+        subcommands = _split_compound_commands(stripped)
+        for sub in subcommands:
+            prog = _first_program(sub)
+            if not prog:
+                continue
+            # P1: Volatile git subcommands
+            if prog == "git":
+                tokens = sub.strip().split()
+                git_idx = 0
+                while git_idx < len(tokens) and tokens[git_idx] != "git":
+                    git_idx += 1
+                if git_idx + 1 < len(tokens):
+                    git_cmd_idx = git_idx + 1
+                    while git_cmd_idx < len(tokens) and tokens[git_cmd_idx].startswith("-"):
+                        git_cmd_idx += 1
+                    if git_cmd_idx < len(tokens):
+                        if tokens[git_cmd_idx] in _VOLATILE_GIT_COMMANDS:
+                            return False
+                continue
+            # P2: Non-git programs.  Default-deny — only programs
+            # explicitly listed in _CACHEABLE_PROGRAMS are cached.
+            # Unknown programs (scripts, wrappers, custom binaries)
+            # are conservatively treated as volatile (issue #329).
+            if prog not in _CACHEABLE_PROGRAMS:
+                return False
+    return True
+
 
 def compute_cache_key(
     image: str,
     commands: list[str],
     input_hash: str = "",
+    container_id: str = "",
 ) -> str:
     """Compute a content-addressable cache key.
 
@@ -55,11 +266,16 @@ def compute_cache_key(
         image: Docker image reference (e.g. ``python@sha256:abcd``).
         commands: List of shell commands.
         input_hash: Optional hash of any input data that affects output.
+        container_id: Container ID to namespace keys per container
+            so identical commands in different containers never
+            collide (issue #329).
 
     Returns:
         Hex digest suitable for use as a cache filename.
     """
     parts = [image, json.dumps(commands, sort_keys=True), input_hash]
+    if container_id:
+        parts.append(container_id)
     canonical = "\0".join(parts)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
