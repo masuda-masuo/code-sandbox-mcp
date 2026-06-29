@@ -15,9 +15,6 @@ import time
 from fastmcp import FastMCP
 
 from code_sandbox_mcp.github_auth import setup_github_app_token
-from code_sandbox_mcp.journal import (
-    record_boundary_crossing,
-)
 from code_sandbox_mcp.result_cache import (
     get_cache_stats,
     invalidate_cache,
@@ -27,12 +24,12 @@ from code_sandbox_mcp.security import (
     set_default_profile,
     validate_image_ref,
 )
-from code_sandbox_mcp.token import (
-    get_pending_tokens,
-    reject_token,
-    verify_token,
-)
 
+from .tools.approval import (
+    sandbox_approval_status,
+    sandbox_approve,
+    sandbox_reject,
+)
 from .tools.container import (
     rerun_failed,
     run_container_and_exec,
@@ -137,6 +134,11 @@ sandbox_list_runs = mcp.tool()(sandbox_list_runs)
 sandbox_journal_path = mcp.tool()(sandbox_journal_path)
 sandbox_trace_dir = mcp.tool()(sandbox_trace_dir)
 
+# Approval tool registrations
+sandbox_approval_status = mcp.tool()(sandbox_approval_status)
+sandbox_approve = mcp.tool()(sandbox_approve)
+sandbox_reject = mcp.tool()(sandbox_reject)
+
 
 @mcp.tool()
 def sandbox_cache_stats() -> str:
@@ -163,108 +165,6 @@ def sandbox_cache_invalidate(key: str | None = None) -> str:
     """
     count = invalidate_cache(key=key)
     return json.dumps({"invalidated": count})
-
-
-
-
-
-@mcp.tool()
-def sandbox_approval_status() -> str:
-    """List all pending approval tokens for boundary-crossing operations.
-
-    Returns a JSON array of pending tokens, each with ``token``,
-    ``operation``, ``details``, ``container_id``, ``run_id``,
-    and ``remaining_seconds``.
-
-    Use :func:`sandbox_approve` or :func:`sandbox_reject` to resolve
-    a pending token.  Tokens expire after a configurable TTL (default
-    5 minutes).
-
-    Returns:
-        JSON string with a list of pending token objects.
-    """
-    pending = get_pending_tokens()
-    # created_at と now は同一クロック (time.monotonic()) なので
-    # スリープ/サスペンドの影響を受けず正確な残り時間が計算できる。
-    now = time.monotonic()
-    for p in pending:
-        p["remaining_seconds"] = max(
-            0,
-            int(p["ttl_seconds"] - (now - p["created_at"])),
-        )
-        del p["created_at"]
-        del p["ttl_seconds"]
-    return json.dumps(pending, ensure_ascii=False)
-
-
-@mcp.tool()
-def sandbox_approve(token: str) -> str:
-    """Approve a pending boundary-crossing operation.
-
-    Verifies the token and records approval in the execution journal.
-    Once approved, the operation that requested the token can proceed.
-
-    Args:
-        token: The confirmation token string (from dry_run output,
-            ``sandbox_approval_status``, or the dashboard).
-
-    Returns:
-        JSON string with ``status`` and metadata, or error details.
-    """
-    result = verify_token(token)
-    if result is None:
-        return json.dumps(
-            {
-                "status": "error",
-                "error": "Token invalid, expired, or already used",
-            }
-        )
-    record_boundary_crossing(
-        result["container_id"],
-        result["operation"],
-        result["details"],
-        approved=True,
-        token=token,
-    )
-    return json.dumps(
-        {
-            "status": "ok",
-            "operation": result["operation"],
-            "details": result["details"],
-            "container_id": result["container_id"],
-            "run_id": result["run_id"],
-        }
-    )
-
-
-@mcp.tool()
-def sandbox_reject(token: str) -> str:
-    """Reject a pending boundary-crossing operation.
-
-    Removes the token from the pending queue.  The operation that
-    requested the token will not be able to proceed without a new
-    token.
-
-    Args:
-        token: The confirmation token string to reject.
-
-    Returns:
-        JSON string with ``status`` and message.
-    """
-    ok = reject_token(token)
-    if not ok:
-        return json.dumps(
-            {
-                "status": "error",
-                "error": "Token not found or already resolved",
-            }
-        )
-    return json.dumps(
-        {
-            "status": "ok",
-            "message": "Token rejected",
-        }
-    )
 
 
 # ---------------------------------------------------------------------------
