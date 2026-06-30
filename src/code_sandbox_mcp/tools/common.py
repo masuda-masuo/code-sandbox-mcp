@@ -76,14 +76,18 @@ def _docker(timeout: float | None = None) -> Any:
 
 
 #: Warning appended to a clone result when the repo was cloned *without* a
-#: VCS token.  Such a clone is read-only: ``publish`` / ``git push`` will
-#: fail because the container has no credentials, and a running container's
-#: token cannot be added afterward (Issue #333 follow-up).  Surfacing this at
-#: clone time stops an LLM from looping on edit -> publish-fails -> retry.
+#: VCS token.  The clone itself is anonymous (public repos only, read-only
+#: working tree), but ``publish`` no longer requires the token to have been
+#: present at container start: it lazily injects a host-resolved token into
+#: the push exec (Issue #347), so a no-token clone can still be published
+#: afterward without a re-init.  Surfacing this at clone time only flags that
+#: the *clone* was unauthenticated (a private repo would have failed), not
+#: that pushing is impossible.
 CLONE_NO_TOKEN_WARNING = (
-    "cloned without a VCS token (read-only): publish / git push WILL fail. "
-    "To push changes, re-initialize the container with inject_vcs_token=True "
-    "and clone again (a running container's token cannot be added afterward)."
+    "cloned without a VCS token (anonymous clone; private repos would fail). "
+    "publish can still push later: it injects a host-resolved token into the "
+    "push step on demand (no re-init needed), provided the host has a token "
+    "available (GITHUB_TOKEN / broker)."
 )
 
 
