@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 import posixpath
 import re
 import shlex
@@ -12,6 +13,7 @@ from typing import Any
 
 from docker.errors import NotFound
 
+from code_sandbox_mcp import token_broker
 from code_sandbox_mcp.journal import get_or_create_run_id, record_boundary_crossing
 from code_sandbox_mcp.token import generate_token, verify_and_consume
 from code_sandbox_mcp.tools.common import (
@@ -675,6 +677,48 @@ def _consume_confirmation_token(
 # ---------------------------------------------------------------------------
 
 
+def _resolve_push_token() -> str:
+    """Resolve a VCS token host-side for lazy injection at push time (Issue #347).
+
+    The token is *not* bound to container start: the host (this MCP server
+    process) can always obtain it.  Returning it here lets :func:`publish`
+    inject the credential into the single ``docker exec`` that pushes —
+    instead of requiring the token to have been baked into the container's
+    environment at ``sandbox_initialize`` time.  This removes the
+    "no-token start → must re-init to push" penalty while keeping
+    least-privilege: containers that never publish never receive a token.
+
+    Resolution order mirrors :func:`code_sandbox_mcp.tools.container._container_env`:
+    a freshly minted broker token (Issue #232) takes precedence, falling
+    back to the static host ``GITHUB_TOKEN`` / ``GH_TOKEN``.  Returns an
+    empty string when no token is available, in which case the push exec
+    relies on whatever credential the container already carries (e.g. a
+    startup-injected token, for backward compatibility).
+    """
+    minted = token_broker.mint_token()
+    if minted:
+        return minted
+    for key in ("GITHUB_TOKEN", "GH_TOKEN"):
+        val = os.environ.get(key)
+        if val:
+            return val
+    return ""
+
+
+def _push_token_env(token: str) -> dict[str, str] | None:
+    """Build the ephemeral exec environment carrying *token*, or ``None``.
+
+    The returned mapping is passed only to the ``docker exec`` calls that
+    actually need credentials (git push, ``gh pr create``, the API-push
+    fallback).  Because it lives solely in that exec's process environment
+    it leaves nothing behind in the container — no env var on the long-lived
+    container, no file, no credential store (Issue #347 ephemerality).
+    """
+    if not token:
+        return None
+    return {"GITHUB_TOKEN": token, "GH_TOKEN": token}
+
+
 def publish(
     container_id: str,
     repo: str,
@@ -782,12 +826,18 @@ Returns:
     working_dir = resolve_git_root(container, working_dir)
 
     # Helper: run a shell command in the container in working_dir.
-    def _run(cmd: str) -> tuple[int, str, str]:
+    # *env* carries a lazily-injected VCS token (Issue #347) for the push /
+    # PR execs only; it is ``None`` for the read-only git commands so no
+    # credential is ever exposed to operations that do not need it.
+    def _run(
+        cmd: str, env: dict[str, str] | None = None
+    ) -> tuple[int, str, str]:
         full_cmd = f"cd {shlex.quote(working_dir)} && {cmd}"
         ec, out = container.exec_run(
             ["/bin/sh", "-c", full_cmd],
             stdout=True,
             stderr=True,
+            environment=env,
         )
         out_stdout, out_stderr = (
             out if isinstance(out, tuple) else (out, b"")
@@ -921,6 +971,16 @@ Returns:
                 "error": commit_err or commit_out,
             })
 
+    # --- Lazy VCS token injection (Issue #347) ---
+    # Resolve a token host-side and hand it to the push / PR / API-push
+    # execs only.  This lets a container started *without*
+    # ``inject_vcs_token`` still publish (no re-init penalty), while
+    # containers that never publish never receive a token.  When no host
+    # token is available, ``push_env`` is ``None`` and the credential helper
+    # falls back to whatever the container already carries (a
+    # startup-injected token), preserving backward compatibility.
+    push_env = _push_token_env(_resolve_push_token())
+
     # --- Git push (with transport fallback to API push) ---
     force_flag = " --force" if allow_force_push else ""
     push_cmd = (
@@ -928,7 +988,7 @@ Returns:
         f"-c credential.helper='!f() {{ echo username=x-access-token; echo password=$GITHUB_TOKEN; }}; f' "
         f"push origin {shlex.quote(branch)}{force_flag}"
     )
-    push_ec, push_out, push_err = _run(push_cmd)
+    push_ec, push_out, push_err = _run(push_cmd, env=push_env)
 
     # Get the SHA of the pushed commit
     sha = ""
@@ -939,7 +999,7 @@ Returns:
     # Transport fallback: git push failed -> try GitHub API push
     if push_ec != 0:
         push_result = _try_api_push(
-            container, cid, repo, branch, working_dir
+            container, cid, repo, branch, working_dir, env=push_env
         )
         if push_result.get("status") == "ok":
             sha = push_result.get("sha", sha)
@@ -984,7 +1044,7 @@ Returns:
         if base_branch:
             pr_cmd += f" --base {shlex.quote(base_branch)}"
 
-        pr_ec, pr_out, pr_err = _run(pr_cmd)
+        pr_ec, pr_out, pr_err = _run(pr_cmd, env=push_env)
         if pr_ec != 0:
             # Push succeeded but PR creation failed — still record push
             record_boundary_crossing(
@@ -1043,23 +1103,33 @@ def _try_api_push(
     repo: str,
     branch: str,
     working_dir: str,
+    env: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Push HEAD via GitHub Objects API (blob->tree->commit->ref).
 
     Returns ``{"status": "ok", "sha": "<sha>"}`` on success,
     or ``{"status": "error", "error": "..."}`` on failure.
+
+    *env* carries the lazily-injected VCS token (Issue #347).  It is
+    forwarded only to the exec that runs the API-push script — the script
+    reads ``GITHUB_TOKEN`` from its environment to authenticate — so a
+    container started without ``inject_vcs_token`` can still push via this
+    fallback transport.
     """
     script_b64 = base64.b64encode(
         _SANDBOX_CREATE_PR_SCRIPT.encode("utf-8")
     ).decode("ascii")
 
-    def _run(cmd: str) -> tuple[int, str, str]:
+    def _run(
+        cmd: str, exec_env: dict[str, str] | None = None
+    ) -> tuple[int, str, str]:
         ec, out = container.exec_run(
             ["sh", "-c", cmd],
             stdout=True,
             stderr=True,
             demux=True,
             workdir=working_dir,
+            environment=exec_env,
         )
         stdout_b, stderr_b = out or (b"", b"")
         out_text = stdout_b.decode("utf-8", errors="replace").strip() if stdout_b else ""
@@ -1070,7 +1140,8 @@ def _try_api_push(
 
     ec, out, err = _run(
         f"trap 'rm -f /tmp/_sandbox_create_pr.py' EXIT"
-        f" && python3 /tmp/_sandbox_create_pr.py {shlex.quote(repo)} {shlex.quote(branch)} {shlex.quote(working_dir)}"
+        f" && python3 /tmp/_sandbox_create_pr.py {shlex.quote(repo)} {shlex.quote(branch)} {shlex.quote(working_dir)}",
+        exec_env=env,
     )
     if ec != 0:
         return {"status": "error", "error": err or out}

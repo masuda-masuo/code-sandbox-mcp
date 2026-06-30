@@ -354,3 +354,217 @@ class TestPublishApiPushFallback:
         assert result["status"] == "dry_run"
         assert "unpushed checkpoints" in result["diff_summary"]
         assert "Checkpoints to squash: 1 commit(s)" in result["diff_summary"]
+
+
+class TestPublishLazyTokenInjection:
+    """Tests for lazy VCS-token injection at push time (Issue #347).
+
+    The token is resolved host-side and handed only to the push / PR
+    execs, so a container started *without* ``inject_vcs_token`` can still
+    publish, while read-only git execs never see a credential.
+    """
+
+    @staticmethod
+    def _simple_push_returns() -> list[tuple[int, bytes, bytes]]:
+        # checkout, git add, no-upstream (skip squash), commit, push, HEAD
+        return [
+            (0, b"", b""),
+            (0, b"", b""),
+            (1, b"", b"no upstream"),
+            (0, b"[fix/x abc1234] Fix", b""),
+            (0, b"", b""),
+            (0, b"abc1234def5678", b""),
+        ]
+
+    @staticmethod
+    def _env_of(call) -> dict | None:
+        # exec_run is called as exec_run([...], stdout=, stderr=, environment=)
+        return call.kwargs.get("environment")
+
+    @patch("code_sandbox_mcp.tools.vcs._resolve_push_token")
+    @patch("code_sandbox_mcp.tools.vcs._docker")
+    @patch("code_sandbox_mcp.tools.vcs.verify_and_consume")
+    @patch("code_sandbox_mcp.tools.vcs.record_boundary_crossing")
+    @patch("code_sandbox_mcp.tools.vcs.get_or_create_run_id")
+    def test_token_injected_into_push_exec_only(
+        self,
+        mock_run_id: MagicMock,
+        mock_record: MagicMock,
+        mock_token: MagicMock,
+        mock_docker: MagicMock,
+        mock_resolve: MagicMock,
+    ) -> None:
+        """A host-resolved token reaches the push exec but not read-only execs."""
+        mock_run_id.return_value = "run123"
+        mock_token.return_value = {
+            "token": "tok_good",
+            "operation": "publish",
+            "details": "...",
+            "container_id": "abc123def456",
+            "run_id": "run123",
+        }
+        mock_resolve.return_value = "ghs_lazytoken"
+
+        container = _make_container_mock(self._simple_push_returns())
+        client = _make_client_mock(container)
+        mock_docker.return_value = client
+
+        result = _decode(publish(
+            container_id="abc123def456",
+            repo="owner/repo",
+            branch="fix/x",
+            message="Fix",
+            dry_run=False,
+            token="tok_good",
+        ))
+        assert result["status"] == "pushed"
+
+        calls = container.exec_run.call_args_list
+        push_calls = [c for c in calls if "push origin" in c.args[0][2]]
+        assert len(push_calls) == 1
+        push_env = self._env_of(push_calls[0])
+        assert push_env == {
+            "GITHUB_TOKEN": "ghs_lazytoken",
+            "GH_TOKEN": "ghs_lazytoken",
+        }
+
+        # Least-privilege: read-only git execs carry no credential.
+        readonly_calls = [
+            c for c in calls if "push origin" not in c.args[0][2]
+        ]
+        assert readonly_calls  # sanity
+        assert all(self._env_of(c) is None for c in readonly_calls)
+
+    @patch("code_sandbox_mcp.tools.vcs._resolve_push_token")
+    @patch("code_sandbox_mcp.tools.vcs._docker")
+    @patch("code_sandbox_mcp.tools.vcs.verify_and_consume")
+    @patch("code_sandbox_mcp.tools.vcs.record_boundary_crossing")
+    @patch("code_sandbox_mcp.tools.vcs.get_or_create_run_id")
+    def test_no_host_token_leaves_push_env_unset(
+        self,
+        mock_run_id: MagicMock,
+        mock_record: MagicMock,
+        mock_token: MagicMock,
+        mock_docker: MagicMock,
+        mock_resolve: MagicMock,
+    ) -> None:
+        """With no host token, the push exec env is None (backward compat).
+
+        The container falls back to whatever credential it already carries
+        (e.g. a startup-injected token), so behaviour is unchanged for
+        containers started with ``inject_vcs_token=True``.
+        """
+        mock_run_id.return_value = "run123"
+        mock_token.return_value = {
+            "token": "tok_good",
+            "operation": "publish",
+            "details": "...",
+            "container_id": "abc123def456",
+            "run_id": "run123",
+        }
+        mock_resolve.return_value = ""
+
+        container = _make_container_mock(self._simple_push_returns())
+        client = _make_client_mock(container)
+        mock_docker.return_value = client
+
+        result = _decode(publish(
+            container_id="abc123def456",
+            repo="owner/repo",
+            branch="fix/x",
+            message="Fix",
+            dry_run=False,
+            token="tok_good",
+        ))
+        assert result["status"] == "pushed"
+
+        calls = container.exec_run.call_args_list
+        assert all(self._env_of(c) is None for c in calls)
+
+    @patch("code_sandbox_mcp.tools.vcs._resolve_push_token")
+    @patch("code_sandbox_mcp.tools.vcs._docker")
+    @patch("code_sandbox_mcp.tools.vcs.verify_and_consume")
+    @patch("code_sandbox_mcp.tools.vcs.record_boundary_crossing")
+    @patch("code_sandbox_mcp.tools.vcs.get_or_create_run_id")
+    def test_token_injected_into_api_push_fallback(
+        self,
+        mock_run_id: MagicMock,
+        mock_record: MagicMock,
+        mock_token: MagicMock,
+        mock_docker: MagicMock,
+        mock_resolve: MagicMock,
+    ) -> None:
+        """When git push fails, the API-push script exec carries the token."""
+        mock_run_id.return_value = "run123"
+        mock_token.return_value = {
+            "token": "tok_good",
+            "operation": "publish",
+            "details": "...",
+            "container_id": "abc123def456",
+            "run_id": "run123",
+        }
+        mock_resolve.return_value = "ghs_lazytoken"
+
+        push_json = json.dumps({"sha": "b" * 40}).encode()
+        container = _make_container_mock([
+            (0, b"", b""),              # checkout
+            (0, b"", b""),              # git add
+            (1, b"", b"no upstream"),  # skip squash
+            (0, b"[fix/x abc] Fix", b""),  # commit
+            (1, b"", b"permission denied"),  # git push fails
+            (0, b"abc1234def5678", b""),     # rev-parse HEAD
+            (0, b"", b""),              # api-push: write script
+            (0, push_json, b""),        # api-push: run script
+        ])
+        client = _make_client_mock(container)
+        mock_docker.return_value = client
+
+        result = _decode(publish(
+            container_id="abc123def456",
+            repo="owner/repo",
+            branch="fix/x",
+            message="Fix",
+            dry_run=False,
+            token="tok_good",
+        ))
+        assert result["status"] == "pushed"
+        assert result["sha"] == "bbbbbbb"
+
+        calls = container.exec_run.call_args_list
+        script_calls = [
+            c for c in calls if "_sandbox_create_pr.py" in c.args[0][-1]
+            and "python3" in c.args[0][-1]
+        ]
+        assert len(script_calls) == 1
+        assert script_calls[0].kwargs.get("environment") == {
+            "GITHUB_TOKEN": "ghs_lazytoken",
+            "GH_TOKEN": "ghs_lazytoken",
+        }
+
+
+class TestResolvePushToken:
+    """Unit tests for the host-side token resolver (Issue #347)."""
+
+    @patch("code_sandbox_mcp.tools.vcs.token_broker.mint_token")
+    def test_prefers_minted_broker_token(self, mock_mint: MagicMock) -> None:
+        from code_sandbox_mcp.tools.vcs import _resolve_push_token
+
+        mock_mint.return_value = "ghs_minted"
+        with patch.dict("os.environ", {"GITHUB_TOKEN": "ghs_static"}):
+            assert _resolve_push_token() == "ghs_minted"
+
+    @patch("code_sandbox_mcp.tools.vcs.token_broker.mint_token")
+    def test_falls_back_to_static_env(self, mock_mint: MagicMock) -> None:
+        from code_sandbox_mcp.tools.vcs import _resolve_push_token
+
+        mock_mint.return_value = None
+        with patch.dict("os.environ", {"GITHUB_TOKEN": "ghs_static"}, clear=True):
+            assert _resolve_push_token() == "ghs_static"
+
+    @patch("code_sandbox_mcp.tools.vcs.token_broker.mint_token")
+    def test_empty_when_no_token_available(self, mock_mint: MagicMock) -> None:
+        from code_sandbox_mcp.tools.vcs import _resolve_push_token
+
+        mock_mint.return_value = None
+        with patch.dict("os.environ", {}, clear=True):
+            assert _resolve_push_token() == ""

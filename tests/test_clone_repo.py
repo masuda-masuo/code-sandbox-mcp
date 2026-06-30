@@ -457,7 +457,10 @@ class TestCloneRepoTransportSelection:
         assert "GIT_TERMINAL_PROMPT=0 git clone" in cmd
         assert "https://github.com/owner/mytool.git" in cmd
         assert "gh repo clone" not in cmd
-        assert "inject_vcs_token=True" in result["warning"]
+        # Issue #347: the warning no longer demands a re-init; it flags the
+        # anonymous clone and notes publish can still push on demand.
+        assert "anonymous clone" in result["warning"]
+        assert "no re-init needed" in result["warning"]
 
     @patch("code_sandbox_mcp.tools.vcs._docker")
     @patch("code_sandbox_mcp.tools.vcs.record_boundary_crossing")
@@ -490,7 +493,8 @@ class TestCloneWarnsWithoutToken:
         )
         assert res.error is None
         assert "WARNING" in res.msg
-        assert "inject_vcs_token=True" in res.msg
+        # Issue #347: warning flags the anonymous clone, not a re-init demand.
+        assert "anonymous clone" in res.msg
 
     @patch("code_sandbox_mcp.tools.container._shiori_preclone_exists",
            return_value=False)
