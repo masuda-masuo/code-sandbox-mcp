@@ -713,6 +713,13 @@ def _push_token_env(token: str) -> dict[str, str] | None:
     fallback).  Because it lives solely in that exec's process environment
     it leaves nothing behind in the container — no env var on the long-lived
     container, no file, no credential store (Issue #347 ephemerality).
+
+    Docker's exec ``Env`` is **additive**: these vars are merged onto the
+    container's existing environment rather than replacing it, so ``PATH`` /
+    ``HOME`` stay intact and ``git`` / ``gh`` / ``python3`` still resolve
+    inside the push exec (verified against docker-py 7.1.0 / Docker exec
+    semantics).  We therefore only need to carry the token here, not a full
+    environment.
     """
     if not token:
         return None
