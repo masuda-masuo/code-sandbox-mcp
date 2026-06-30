@@ -221,6 +221,12 @@ tr:hover {{ background: #161b22; }}
 
 
 def _escape(text: str) -> str:
+    """HTML-escape *text* for safe embedding in attribute values and text content.
+
+    Uses ``html.escape(quote=True)`` which handles ``&``, ``<``, ``>``,
+    ``"``, and ``'`` — sufficient for ``title`` and ``value`` attributes.
+    Not suitable for ``href``, ``style``, ``on*``, or raw URL contexts.
+    """
     return _html.escape(text, quote=True)
 
 

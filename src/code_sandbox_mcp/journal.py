@@ -300,13 +300,17 @@ def record_test_environment(
 def read_journal(
     run_id: str | None = None,
     max_entries: int | None = None,
+    from_ts: str | None = None,
+    to_ts: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Read journal entries, optionally filtered by *run_id*.
+    """Read journal entries, optionally filtered by *run_id* and/or time range.
 
     Args:
         run_id: If provided, only return entries for this run.
         max_entries: Maximum number of entries to return (most recent
             first when specified).
+        from_ts: Inclusive lower bound for ``ts`` (ISO format).
+        to_ts: Exclusive upper bound for ``ts`` (ISO format).
 
     Returns:
         List of journal entry dicts, oldest first.
@@ -325,8 +329,14 @@ def read_journal(
                     entry = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if run_id is None or entry.get("run_id") == run_id:
-                    entries.append(entry)
+                if run_id is not None and entry.get("run_id") != run_id:
+                    continue
+                ts = entry.get("ts", "")
+                if from_ts is not None and ts < from_ts:
+                    continue
+                if to_ts is not None and ts >= to_ts:
+                    continue
+                entries.append(entry)
 
     if max_entries is not None and len(entries) > max_entries:
         entries = entries[-max_entries:]
@@ -509,12 +519,20 @@ def classify_exec_command(cmd: str) -> str:
     for sep in ("&&", ";", "||", "|"):
         idx = cmd.find(sep)
         if idx > 0:
-            # Only split on separators that are outside quotes
-            quoted = False
-            for i, ch in enumerate(cmd[:idx]):
-                if ch in ("'", '"'):
-                    quoted = not quoted
-            if not quoted:
+            in_single = False
+            in_double = False
+            i = 0
+            while i < idx:
+                ch = cmd[i]
+                if ch == '\\' and i + 1 < idx:
+                    i += 2
+                    continue
+                if ch == "'" and not in_double:
+                    in_single = not in_single
+                elif ch == '"' and not in_single:
+                    in_double = not in_double
+                i += 1
+            if not in_single and not in_double:
                 cmd = cmd[:idx].strip()
                 break
 
@@ -624,7 +642,9 @@ def get_tool_usage(
         - ``structured_ops`` — count of each structured tool operation
         - ``bypass_count`` — exec commands that could have used a dedicated tool
         - ``bypass_rate_pct`` — bypass as % of (dedicated + bypass)
+        - ``bypass_detail`` — ``{shell_command: count}`` breakdown of bypassed commands
         - ``exec_entry_count`` — total number of exec *entries* (not sub-commands)
+        - ``_tool_intro_dates`` — ``{tool: intro_date}`` mapping for bias correction
     """
     if to_date is None:
         to_dt = date.today()
@@ -639,7 +659,7 @@ def get_tool_usage(
     from_iso = from_dt.isoformat()
     to_iso = (to_dt + timedelta(days=1)).isoformat()  # exclusive upper bound
 
-    entries = read_journal()
+    entries = read_journal(from_ts=from_iso, to_ts=to_iso)
 
     total_ops = 0
     exec_ops = 0
@@ -651,9 +671,6 @@ def get_tool_usage(
     bypass_detail: dict[str, int] = {}
 
     for entry in entries:
-        ts = entry.get("ts", "")
-        if ts < from_iso or ts >= to_iso:
-            continue
 
         op = entry.get("operation", "")
         if op in ("initialize", "initialize_complete", "stop", "test_environment"):
@@ -679,7 +696,7 @@ def get_tool_usage(
                 if tool:
                     tool_intro = _TOOL_INTRO_DATES.get(tool, "")
                     # Only count as bypass if the tool existed at the time
-                    if tool_intro and ts[:10] >= tool_intro:
+                    if tool_intro and entry.get("ts", "")[:10] >= tool_intro:
                         bypass_count += 1
                         bypass_detail[first_word] = bypass_detail.get(first_word, 0) + 1
 
