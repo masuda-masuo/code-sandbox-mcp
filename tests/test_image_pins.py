@@ -10,20 +10,16 @@ did (#214).
 from __future__ import annotations
 
 import json
-import re
 from importlib import resources
 
 import pytest
 
 from code_sandbox_mcp import image_pins
 from code_sandbox_mcp.image_pins import (
+    _PIN_PATTERN,
     PIN_KEYS,
     ImagePinError,
     load_image_pins,
-)
-
-_DIGEST_REF = re.compile(
-    r"^ghcr\.io/[A-Za-z0-9._/-]+/sandbox@sha256:[0-9a-f]{64}$"
 )
 
 
@@ -34,7 +30,7 @@ def test_pins_load_with_expected_keys() -> None:
 
 def test_every_pin_is_a_digest_ref() -> None:
     for key, ref in load_image_pins().items():
-        assert _DIGEST_REF.match(ref), f"pin {key!r} is not digest-pinned: {ref!r}"
+        assert _PIN_PATTERN.match(ref), f"pin {key!r} is not digest-pinned: {ref!r}"
 
 
 def test_json_resource_is_packaged() -> None:
@@ -86,8 +82,28 @@ def test_loader_rejects_malformed_json(tmp_path, monkeypatch) -> None:
         load_image_pins()
 
 
+def test_loader_rejects_non_dict_json(tmp_path, monkeypatch) -> None:
+    _patch_resource(monkeypatch, tmp_path, json.dumps(["not", "a", "dict"]))
+    with pytest.raises(ImagePinError, match="must be a JSON object"):
+        load_image_pins()
+
+
+def test_loader_rejects_missing_keys(tmp_path, monkeypatch) -> None:
+    bad = {k: f"ghcr.io/x/sandbox@sha256:{'0' * 64}" for k in PIN_KEYS}
+    del bad["python"]
+    _patch_resource(monkeypatch, tmp_path, json.dumps(bad))
+    with pytest.raises(ImagePinError, match="keys mismatch"):
+        load_image_pins()
+
+
 def _patch_resource(monkeypatch, tmp_path, text: str) -> None:
-    """Point the loader at a temp pin file instead of the packaged one."""
+    """Point the loader at a temp pin file instead of the packaged one.
+
+    The monkeypatch fixture restores the original ``resources.files`` when
+    the test function returns, so the patch is effectively scoped to the
+    calling test.  New tests that need the real ``resources.files()`` are
+    unaffected.
+    """
     pin_file = tmp_path / image_pins._PINS_RESOURCE
     pin_file.write_text(text, encoding="utf-8")
 
