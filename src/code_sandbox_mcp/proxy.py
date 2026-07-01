@@ -45,6 +45,7 @@ sidecar image packaging + container CA wiring (#358).
 from __future__ import annotations
 
 import os
+import threading
 import time
 from dataclasses import dataclass
 
@@ -103,7 +104,9 @@ def repo_from_path(path: str) -> str | None:
         repo = repo[:-4]
     if not owner or not repo:
         return None
-    return f"{owner}/{repo}"
+    # GitHub repo names are case-insensitive; normalise so allowlist matching
+    # is not defeated by URL casing (PR #365 review).
+    return f"{owner}/{repo}".lower()
 
 
 @dataclass(frozen=True)
@@ -128,30 +131,47 @@ class EgressGuard:
     The decision logic (:meth:`decide`) is pure and takes an explicit *now*, so
     it can be unit-tested without mitmproxy or a real clock.  :meth:`request` is
     the thin mitmproxy hook that maps a denied :class:`Decision` to a 403.
+
+    Repo names are matched case-insensitively (GitHub treats them so): the
+    allowlist, the window keys, and :func:`repo_from_path` are all lower-cased.
+
+    Thread safety: the control plane (#356 / #357) will open/close windows from
+    a different thread than mitmproxy's event loop, which reads them in
+    :meth:`request`.  Window state is therefore guarded by ``self._lock``.
     """
 
     def __init__(self, allowed_repos: set[str] | None = None) -> None:
         """Create a guard.
 
         *allowed_repos* is the set of ``owner/repo`` strings that may ever be
-        pushed to; anything outside it is denied regardless of windows.
+        pushed to (matched case-insensitively); anything outside it is denied
+        regardless of windows.
         """
-        self._allowed: set[str] = set(allowed_repos or ())
+        self._allowed: set[str] = {r.lower() for r in (allowed_repos or ())}
         #: repo -> monotonic expiry timestamp of an open push window.
         self._windows: dict[str, float] = {}
+        self._lock = threading.Lock()
 
     # -- authorization window control (to be driven by publish; #356 / #357) --
 
-    def open_window(self, repo: str, ttl_seconds: float) -> None:
-        """Permit push to *repo* for the next *ttl_seconds* (both git requests)."""
-        self._windows[repo] = time.monotonic() + ttl_seconds
+    def open_window(self, repo: str, ttl_seconds: float, now: float | None = None) -> None:
+        """Permit push to *repo* for the next *ttl_seconds* (both git requests).
+
+        *now* defaults to ``time.monotonic()``; pass it explicitly to keep the
+        expiry deterministic in tests, mirroring :meth:`decide`.
+        """
+        base = time.monotonic() if now is None else now
+        with self._lock:
+            self._windows[repo.lower()] = base + ttl_seconds
 
     def close_window(self, repo: str) -> None:
         """Revoke any open push window for *repo*."""
-        self._windows.pop(repo, None)
+        with self._lock:
+            self._windows.pop(repo.lower(), None)
 
     def _window_open(self, repo: str, now: float) -> bool:
-        expiry = self._windows.get(repo)
+        with self._lock:
+            expiry = self._windows.get(repo)
         return expiry is not None and now < expiry
 
     # -- decision core (pure) --

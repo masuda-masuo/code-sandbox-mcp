@@ -63,10 +63,14 @@ class TestRepoFromPath:
     """Extract owner/repo from a git smart-HTTP path."""
 
     def test_ref_discovery_path(self) -> None:
-        assert repo_from_path("/octocat/Hello-World.git/info/refs") == "octocat/Hello-World"
+        assert repo_from_path("/octocat/hello-world.git/info/refs") == "octocat/hello-world"
 
     def test_data_path_without_dot_git(self) -> None:
-        assert repo_from_path("/octocat/Hello-World/git-receive-pack") == "octocat/Hello-World"
+        assert repo_from_path("/octocat/hello-world/git-receive-pack") == "octocat/hello-world"
+
+    def test_lowercases_owner_and_repo(self) -> None:
+        # GitHub repo names are case-insensitive (PR #365 review).
+        assert repo_from_path("/Octocat/Hello-World.git/info/refs") == "octocat/hello-world"
 
     def test_too_short_path(self) -> None:
         assert repo_from_path("/octocat") is None
@@ -116,11 +120,18 @@ class TestEgressGuardDecision:
 
     def test_window_expires(self) -> None:
         guard = EgressGuard({"o/r"})
-        # Drive the clock explicitly instead of sleeping.
+        # Drive the clock explicitly (open_window takes now, like decide).
         base = time.monotonic()
-        guard._windows["o/r"] = base + 5.0
+        guard.open_window("o/r", ttl_seconds=5.0, now=base)
         assert guard.decide("/o/r.git/info/refs", PUSH_SERVICE, base + 1.0).allow is True
         assert guard.decide("/o/r.git/info/refs", PUSH_SERVICE, base + 6.0).allow is False
+
+    def test_push_match_is_case_insensitive(self) -> None:
+        # Allowlist entry, window key, and URL path differ only in case.
+        guard = EgressGuard({"Octocat/Hello-World"})
+        guard.open_window("octocat/HELLO-world", ttl_seconds=30, now=100.0)
+        d = guard.decide("/octocat/hello-world.git/info/refs", PUSH_SERVICE, now=101.0)
+        assert d.allow is True
 
     def test_close_window_revokes(self) -> None:
         guard = EgressGuard({"o/r"})
