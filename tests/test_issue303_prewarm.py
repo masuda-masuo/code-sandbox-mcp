@@ -61,7 +61,23 @@ class TestPrewarmDefaultImage:
             "code_sandbox_mcp.tools.container._DEFAULT_IMAGE", _IMAGE
         ):
             prewarm_default_image()
-        ensure.assert_called_once_with(_IMAGE)
+        ensure.assert_any_call(_IMAGE)
+
+    def test_prewarms_python_and_go_variants_too(self) -> None:
+        # language detection can pick python/go instead of the
+        # neutral default, so those must be warm too, not just the default.
+        with patch(
+            "code_sandbox_mcp.tools.container._ensure_image"
+        ) as ensure, patch(
+            "code_sandbox_mcp.tools.container._DEFAULT_IMAGE", _IMAGE
+        ), patch(
+            "code_sandbox_mcp.tools.container._PYTHON_IMAGE", "python-variant"
+        ), patch(
+            "code_sandbox_mcp.tools.container._GO_IMAGE", "go-variant"
+        ):
+            prewarm_default_image()
+        called_images = {c.args[0] for c in ensure.call_args_list}
+        assert called_images == {_IMAGE, "python-variant", "go-variant"}
 
     def test_swallows_errors(self) -> None:
         with patch(
@@ -70,6 +86,20 @@ class TestPrewarmDefaultImage:
         ):
             # Must not raise — prewarm failures never break startup.
             prewarm_default_image()
+
+    def test_one_failing_image_does_not_block_others(self) -> None:
+        with patch(
+            "code_sandbox_mcp.tools.container._ensure_image",
+            side_effect=RuntimeError("registry hiccup"),
+        ) as ensure, patch(
+            "code_sandbox_mcp.tools.container._DEFAULT_IMAGE", _IMAGE
+        ), patch(
+            "code_sandbox_mcp.tools.container._PYTHON_IMAGE", "python-variant"
+        ), patch(
+            "code_sandbox_mcp.tools.container._GO_IMAGE", "go-variant"
+        ):
+            prewarm_default_image()
+        assert ensure.call_count == 3
 
 
 class TestStartImagePrewarm:

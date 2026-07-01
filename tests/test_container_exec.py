@@ -36,6 +36,7 @@ class TestRunContainerAndExecCloneRepo:
             image="python@sha256:0000000000000000000000000000000000000000000000000000000000000000",
             commands=["echo hello"],
             clone_repo="owner/repo",
+            allow_network=True,
         ))
 
         assert result["status"] == "ok"
@@ -65,6 +66,7 @@ class TestRunContainerAndExecCloneRepo:
             image="python@sha256:0000000000000000000000000000000000000000000000000000000000000000",
             commands=["echo hello"],
             clone_repo="owner/repo",
+            allow_network=True,
         ))
 
         assert result["status"] == "ok"
@@ -95,6 +97,7 @@ class TestRunContainerAndExecCloneRepo:
             image="python@sha256:0000000000000000000000000000000000000000000000000000000000000000",
             commands=["echo hello"],
             clone_repo="owner/repo",
+            allow_network=True,
         ))
 
         assert result["status"] == "ok"
@@ -152,6 +155,7 @@ class TestRunContainerAndExecCloneRepo:
             image="python@sha256:0000000000000000000000000000000000000000000000000000000000000000",
             commands=["echo hello"],
             clone_repo="owner/repo",
+            allow_network=True,
         ))
 
         assert result["status"] == "ok"
@@ -217,12 +221,45 @@ class TestRunContainerAndExecPipExtras:
             image="python@sha256:0000000000000000000000000000000000000000000000000000000000000000",
             commands=["echo hello"],
             clone_repo="owner/repo",
+            allow_network=True,
         ))
 
         assert result["status"] == "ok"
         assert mock_container.exec_run.call_count == 2
         first_cmd = mock_container.exec_run.call_args_list[0][0][0][-1]
         assert "pip install -e '.[dev]' -q" in first_cmd
+
+    @patch("code_sandbox_mcp.tools.container._shiori_preclone_exists", return_value=True)
+    @patch("code_sandbox_mcp.tools.container._clone_shiori_repo_to_container")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container.validate_image_ref")
+    def test_pip_extras_skipped_without_network(
+        self,
+        mock_validate: MagicMock,
+        mock_docker: MagicMock,
+        mock_clone: MagicMock,
+        mock_preclone_exists: MagicMock,
+    ) -> None:
+        """without network access pip can't reach PyPI, so the
+        install must be skipped rather than hang until pip's own timeout."""
+        mock_container = MagicMock()
+        mock_container.id = "abc123def456"
+        mock_container.exec_run.return_value = (0, (b"output", b""))
+        mock_client = MagicMock()
+        mock_client.containers.run.return_value = mock_container
+        mock_docker.return_value = mock_client
+        mock_clone.return_value = "Clone OK"
+
+        result = json.loads(run_container_and_exec(
+            image="python@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            commands=["echo hello"],
+            clone_repo="owner/repo",
+            allow_network=False,
+        ))
+
+        assert result["status"] == "ok"
+        # Only the user command runs — no pip install exec call.
+        assert mock_container.exec_run.call_count == 1
 
     @patch("code_sandbox_mcp.tools.container._shiori_preclone_exists", return_value=True)
     @patch("code_sandbox_mcp.tools.container._clone_shiori_repo_to_container")
@@ -251,6 +288,7 @@ class TestRunContainerAndExecPipExtras:
             commands=["echo hello"],
             clone_repo="owner/repo",
             pip_extras="[test]",
+            allow_network=True,
         ))
 
         first_cmd = mock_container.exec_run.call_args_list[0][0][0][-1]
@@ -282,6 +320,7 @@ class TestRunContainerAndExecPipExtras:
             image="python@sha256:0000000000000000000000000000000000000000000000000000000000000000",
             commands=["echo hello"],
             clone_repo="owner/repo",
+            allow_network=True,
         ))
 
         assert result["status"] == "ok"
@@ -310,6 +349,7 @@ class TestRunContainerAndExecPipExtras:
             image="python@sha256:0000000000000000000000000000000000000000000000000000000000000000",
             commands=["echo hello"],
             clone_repo="owner/repo",
+            allow_network=True,
         ))
 
         assert result["status"] == "ok"

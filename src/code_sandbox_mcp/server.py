@@ -264,9 +264,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=3600,
         help=(
-            "Pull the default sandbox image at startup and re-check every N "
-            "seconds so the first sandbox_initialize is warm (Issue #303). "
-            "Set to 0 to disable prewarming (default: 3600)."
+            "Pull the default and language-variant sandbox images at startup "
+            "and re-check every N seconds so the first sandbox_initialize is "
+            "warm regardless of which image language detection picks "
+            "(Issue #303). Set to 0 to disable prewarming (default: 3600)."
         ),
     )
     return parser
@@ -304,14 +305,16 @@ def _start_github_app_token_refresh(interval_seconds: int = 120) -> None:
 
 
 def _start_image_prewarm(interval_seconds: int = 3600) -> None:
-    """Pull the default sandbox image now and re-check it periodically.
+    """Pull the default and variant sandbox images now and re-check periodically.
 
     Removes the cold-start cliff where the first ``sandbox_initialize`` trips
     the client request timeout while the initial ``docker pull`` runs longer
-    than the timeout (Issue #303).  Runs in a daemon thread so startup is
+    than the timeout (Issue #303).  Also covers the ``python``/``go`` variant
+    images that detection-based image selection can pick instead of the
+    neutral default.  Runs in a daemon thread so startup is
     never blocked; the initial pull happens on the first iteration and each
     subsequent cycle is a cheap local presence check (a no-op once the
-    digest-pinned image is cached).  A non-positive *interval_seconds*
+    digest-pinned images are cached).  A non-positive *interval_seconds*
     disables prewarming entirely.
     """
     if interval_seconds <= 0:
@@ -328,7 +331,7 @@ def _start_image_prewarm(interval_seconds: int = 3600) -> None:
         target=_prewarm_loop, name="image-prewarm", daemon=True
     )
     thread.start()
-    logger.info("started default image prewarm thread (every %ss)", interval_seconds)
+    logger.info("started image prewarm thread (every %ss)", interval_seconds)
 
 
 def main() -> None:
