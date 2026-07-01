@@ -222,25 +222,34 @@ def _ensure_image(image: str) -> None:
 
 
 def prewarm_default_image() -> None:
-    """Pull the default sandbox image so the first ``sandbox_initialize`` is warm.
+    """Pull the default and language-variant images so first use is warm.
 
     A cold-start image pull can exceed the MCP/HTTP request timeout, so the
     first ``sandbox_initialize`` fails even though the pull finishes in the
-    background and the next call succeeds (Issue #303).  Pulling the image
+    background and the next call succeeds (Issue #303).  Pulling the images
     ahead of time — at server startup and periodically — removes that
     first-call cliff and does not depend on progress notifications keeping the
     connection alive.
 
+    Originally this only pulled the neutral default image, but
+    ``_select_initial_image`` can also pick the ``python`` or ``go`` variant
+    based on language detection — those were never prewarmed, so detection
+    routinely traded one cold pull (neutral) for another (variant).  Pull
+    all three so detection never hits a cold image.
+
     Reads the module-level :data:`_DEFAULT_IMAGE` at call time so a
     ``--default-image`` override applied before the prewarm thread starts is
-    honoured.  Any failure (registry hiccup, Docker down) is swallowed so it
-    never blocks startup; the next refresh cycle retries.
+    honoured.  Any failure (registry hiccup, Docker down) is swallowed per
+    image so one bad pull never blocks the others or startup; the next
+    refresh cycle retries.
     """
-    try:
-        _ensure_image(_DEFAULT_IMAGE)
-        logger.info("prewarmed default sandbox image %s", _DEFAULT_IMAGE)
-    except Exception:  # noqa: BLE001 - prewarm must never break startup
-        logger.exception("prewarm of default image failed")
+    images = {_DEFAULT_IMAGE, _PYTHON_IMAGE, _GO_IMAGE}
+    for image in images:
+        try:
+            _ensure_image(image)
+            logger.info("prewarmed sandbox image %s", image)
+        except Exception:  # noqa: BLE001 - prewarm must never break startup
+            logger.exception("prewarm of image %s failed", image)
 
 
 def _validate_clone_repo(clone_repo: str) -> tuple[str, str]:
@@ -544,11 +553,28 @@ class CloneResult(NamedTuple):
     error: str | None
 
 
+def _editable_install_cmd(target: str) -> str:
+    """Build a shell command that pip-installs *target* (e.g. ``".[dev]"``).
+
+    Prefers ``uv`` — preinstalled on every stock sandbox image and markedly
+    faster than pip — falling back to plain ``pip`` for custom images that
+    don't have it.  Resolved in a single ``exec_run`` call (no
+    extra round trip to probe for ``uv`` first).
+    """
+    quoted = shlex.quote(target)
+    return (
+        f"if command -v uv >/dev/null 2>&1; then "
+        f"uv pip install --system -e {quoted} -q; "
+        f"else pip install -e {quoted} -q; fi"
+    )
+
+
 def _run_pip_install(
     container: Any,
     clone_repo: str,
     clone_dest: str,
     pip_extras: str,
+    allow_network: bool = True,
 ) -> None:
     """Run pip install inside the container after a successful clone.
 
@@ -557,10 +583,19 @@ def _run_pip_install(
         clone_repo: Repository in ``"owner/name"`` format.
         clone_dest: Destination directory for the clone.
         pip_extras: Pip extras string (e.g. ``"[dev]"``).
+        allow_network: Whether the container has network access.  PyPI is
+            unreachable without it, so the install would just hang until pip's
+            own connect timeout fires; skip it instead.
     """
+    if not allow_network:
+        logger.info(
+            "Skipping pip install for %s: container has no network access",
+            clone_repo,
+        )
+        return
     repo_name = clone_repo.split("/")[-1]
     safe_dest = shlex.quote(f"{clone_dest}/{repo_name}")
-    install_cmd = f"cd {safe_dest} && pip install -e '.{pip_extras}' -q"
+    install_cmd = f"cd {safe_dest} && {_editable_install_cmd(f'.{pip_extras}')}"
     exit_code, output = container.exec_run(
         ["/bin/sh", "-c", install_cmd],
         stdout=True,
@@ -719,9 +754,12 @@ def _setup_pr_branch(
         cid,
     )
 
-    # Step 4: Install dev dependencies (non-fatal)
+    # Step 4: Install dev dependencies (non-fatal). Prefer uv (preinstalled on
+    # stock sandbox images, markedly faster than pip) with a pip fallback for
+    # custom images; network is always available here since
+    # sandbox_initialize forces allow_network=True whenever pr is set.
     if pip_extras is not None:
-        install_cmd = f"cd {safe_dest} && pip install -e '.{pip_extras}' -q"
+        install_cmd = f"cd {safe_dest} && {_editable_install_cmd(f'.{pip_extras}')}"
         exit_code, output = container.exec_run(
             ["/bin/sh", "-c", install_cmd],
             stdout=True,
@@ -939,8 +977,10 @@ def sandbox_initialize(
                inside the container, checks out the PR head branch,
                and installs dev dependencies.
         pip_extras: Pip extras string (e.g. ``"[dev]"``) for dev install.
-               Pass ``None`` to skip pip install entirely.
-               Also used when *clone_repo* is specified.
+               Pass ``None`` to skip pip install entirely.  Also used when
+               *clone_repo* is specified, and skipped automatically (with a
+               log message) when the container has no network access, since
+               PyPI would be unreachable.
         mem_limit: Optional memory-limit override (e.g. ``"2g"``).
                The default profile caps containers at 512MB with swap
                disabled, which OOM-thrashes heavy installs (e.g. torch)
@@ -1079,7 +1119,9 @@ def sandbox_initialize(
         else:
             clone_msg = " " + (msg or "")
         if pip_extras is not None and err is None:
-            _run_pip_install(container, clone_repo, clone_dest, pip_extras)
+            _run_pip_install(
+                container, clone_repo, clone_dest, pip_extras, allow_network
+            )
     elif clone_repo and pr is not None:
         logger.info(
             "Skipping clone_repo=%s (pr=%s handles its own clone)",
@@ -1338,8 +1380,10 @@ def run_container_and_exec(
                inside the container, checks out the PR head branch,
                and installs dev dependencies.
         pip_extras: Pip extras string (e.g. ``"[dev]"``) for dev install.
-               Pass ``None`` to skip pip install entirely.
-               Also used when *clone_repo* is specified.
+               Pass ``None`` to skip pip install entirely.  Also used when
+               *clone_repo* is specified, and skipped automatically (with a
+               log message) when the container has no network access, since
+               PyPI would be unreachable.
         timeout: Maximum seconds to let the command run (``0`` = no
                limit, the default).  When the timeout expires the process
                is killed and the tool returns ``status="timeout"`` with
@@ -1430,7 +1474,9 @@ def run_container_and_exec(
             inject_vcs_token,
         )
         if pip_extras is not None and clone_error is None:
-            _run_pip_install(container, clone_repo, clone_dest, pip_extras)
+            _run_pip_install(
+                container, clone_repo, clone_dest, pip_extras, allow_network
+            )
     elif clone_repo and pr is not None:
         logger.info(
             "Skipping clone_repo=%s (pr=%s handles its own clone)",

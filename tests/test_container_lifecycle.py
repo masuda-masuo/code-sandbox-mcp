@@ -220,12 +220,46 @@ class TestSandboxInitializeCloneRepoPipExtras:
         result = sandbox_initialize(
             image="python@sha256:0000000000000000000000000000000000000000000000000000000000000000",
             clone_repo="owner/repo",
+            allow_network=True,
         )
 
         assert "abc123def456" in result
         assert mock_container.exec_run.call_count == 1
         call_cmd = mock_container.exec_run.call_args[0][0][-1]
         assert "pip install -e '.[dev]' -q" in call_cmd
+
+    @patch("code_sandbox_mcp.tools.container._shiori_preclone_exists", return_value=True)
+    @patch("code_sandbox_mcp.tools.container._clone_shiori_repo_to_container")
+    @patch("code_sandbox_mcp.tools.container._docker")
+    @patch("code_sandbox_mcp.tools.container._ensure_image")
+    @patch("code_sandbox_mcp.tools.container.validate_image_ref")
+    def test_pip_extras_skipped_without_network(
+        self,
+        mock_validate: MagicMock,
+        mock_ensure_image: MagicMock,
+        mock_docker: MagicMock,
+        mock_clone: MagicMock,
+        mock_preclone_exists: MagicMock,
+    ) -> None:
+        """pip install would hang trying to reach PyPI without
+        network access (e.g. the Shiori pre-clone fast path, which doesn't
+        auto-enable network), so it must be skipped instead."""
+        mock_container = MagicMock()
+        mock_container.id = "abc123def456"
+        mock_container.exec_run.return_value = (0, (b"Installed", b""))
+        mock_client = MagicMock()
+        mock_client.containers.run.return_value = mock_container
+        mock_docker.return_value = mock_client
+        mock_clone.return_value = "Clone OK"
+
+        result = sandbox_initialize(
+            image="python@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            clone_repo="owner/repo",
+            allow_network=False,
+        )
+
+        assert "abc123def456" in result
+        assert mock_container.exec_run.call_count == 0
 
     @patch("code_sandbox_mcp.tools.container._shiori_preclone_exists", return_value=True)
     @patch("code_sandbox_mcp.tools.container._clone_shiori_repo_to_container")
@@ -252,6 +286,7 @@ class TestSandboxInitializeCloneRepoPipExtras:
             image="python@sha256:0000000000000000000000000000000000000000000000000000000000000000",
             clone_repo="owner/repo",
             pip_extras="[test]",
+            allow_network=True,
         )
 
         call_cmd = mock_container.exec_run.call_args[0][0][-1]
@@ -281,6 +316,7 @@ class TestSandboxInitializeCloneRepoPipExtras:
         result = sandbox_initialize(
             image="python@sha256:0000000000000000000000000000000000000000000000000000000000000000",
             clone_repo="owner/repo",
+            allow_network=True,
         )
 
         assert "abc123def456" in result
@@ -310,6 +346,7 @@ class TestSandboxInitializeCloneRepoPipExtras:
         result = sandbox_initialize(
             image="python@sha256:0000000000000000000000000000000000000000000000000000000000000000",
             clone_repo="owner/repo",
+            allow_network=True,
         )
 
         assert "clone_repo failed" in result
