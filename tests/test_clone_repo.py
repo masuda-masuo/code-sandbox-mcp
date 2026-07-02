@@ -519,7 +519,7 @@ class TestEditableInstallCmd:
         cmd = _editable_install_cmd('".[dev]"')
 
         assert "if command -v uv >/dev/null 2>&1; then " in cmd
-        assert "uv venv \"$VENV\" >/dev/null 2>&1" in cmd
+        assert "uv venv --clear \"$VENV\" >/dev/null 2>&1" in cmd
         assert "uv pip install --python \"$VENV/bin/python\" -e " in cmd
         assert "; rc=$?; rm -rf \"$VENV\"; exit $rc; " in cmd
         assert "else pip install -e " in cmd
@@ -537,4 +537,4 @@ class TestEditableInstallCmd:
 
         cmd = _editable_install_cmd("foo[bar]")
 
-        assert "foo[bar]" in cmd
+        assert "'foo[bar]'" in cmd, "shlex.quote should wrap target in single quotes"

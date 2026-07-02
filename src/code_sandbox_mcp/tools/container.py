@@ -565,8 +565,8 @@ def _editable_install_cmd(target: str) -> str:
     quoted = shlex.quote(target)
     return (
         f"if command -v uv >/dev/null 2>&1; then "
-        f"VENV=$(mktemp -u) && "
-        f"uv venv \"$VENV\" >/dev/null 2>&1 && "
+        f"VENV=$(mktemp -d) && "
+        f"uv venv --clear \"$VENV\" >/dev/null 2>&1 && "
         f"uv pip install --python \"$VENV/bin/python\" -e {quoted} -q; "
         f"rc=$?; rm -rf \"$VENV\"; exit $rc; "
         f"else pip install -e {quoted} -q; fi"
