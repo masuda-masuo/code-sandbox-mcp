@@ -641,6 +641,8 @@ def read_file_range(
             and *end_line* instead.
         end_line: 1-indexed end line (inclusive).  When omitted,
             reads from *start_line* to end of file.
+            Mutually exclusive with *offset* (use either
+            start_line/end_line or offset/limit, not both).
 
     Returns:
         JSON string with file content and metadata, or an error
@@ -659,6 +661,19 @@ def read_file_range(
     except Exception as e:
         return json.dumps({"error": str(e)})
 
+    if start_line is not None and offset != 0:
+        return json.dumps({
+            "error": "start_line and offset are mutually exclusive. "
+            "Use start_line/end_line (1-indexed) or offset/limit (0-indexed), not both."
+        })
+    if start_line is not None and start_line < 1:
+        return json.dumps({
+            "error": "start_line must be >= 1 (1-indexed)"
+        })
+    if end_line is not None and start_line is not None and end_line < start_line:
+        return json.dumps({
+            "error": "end_line must be >= start_line"
+        })
     resolved_offset = offset
     resolved_limit = limit
     if start_line is not None:
