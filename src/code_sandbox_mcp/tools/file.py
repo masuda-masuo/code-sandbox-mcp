@@ -592,6 +592,8 @@ def read_file_range(
     file_path: str,
     offset: int = 0,
     limit: int = 50,
+    start_line: int | None = None,
+    end_line: int | None = None,
 ) -> str:
     """Read lines from *file_path* starting at *offset*.
 
@@ -634,6 +636,11 @@ def read_file_range(
         offset: 0-indexed line offset to start reading from.
         limit: Maximum number of lines to return.  Use ``-1`` to read
             all remaining lines from *offset*.
+        start_line: 1-indexed start line (inclusive).  When set,
+            *offset* and *limit* are derived from *start_line*
+            and *end_line* instead.
+        end_line: 1-indexed end line (inclusive).  When omitted,
+            reads from *start_line* to end of file.
 
     Returns:
         JSON string with file content and metadata, or an error
@@ -652,8 +659,16 @@ def read_file_range(
     except Exception as e:
         return json.dumps({"error": str(e)})
 
+    resolved_offset = offset
+    resolved_limit = limit
+    if start_line is not None:
+        resolved_offset = start_line - 1
+        if end_line is not None:
+            resolved_limit = end_line - start_line + 1
+        else:
+            resolved_limit = -1
     result = read_file_lines(
-        _, file_path, offset=offset, limit=limit
+        _, file_path, offset=resolved_offset, limit=resolved_limit
     )
     return json.dumps(result)
 
