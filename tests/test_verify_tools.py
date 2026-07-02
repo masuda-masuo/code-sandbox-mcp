@@ -751,7 +751,7 @@ class TestVerifyInContainer:
 
         assert result["gate_passed"] is False
         assert result["partial_test_run"] is True
-        assert "no_tests" in result["gate_fail_reasons"][0]
+        assert "no tests matched" in result["gate_fail_reasons"][0]
 
     @patch("code_sandbox_mcp.tools.verify._docker")
     def test_no_tests_without_filter_gate_pass(self, mock_docker: MagicMock) -> None:

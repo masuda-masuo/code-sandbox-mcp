@@ -513,10 +513,10 @@ def verify_in_container(
             return {"status": "no_tests", "error": "no test output produced", "raw_output": raw_tail}
 
         try:
-            report = PytestAdapter.parse_json(json_part)
+            raw_report = json.loads(json_part)
+            report = PytestAdapter.parse(raw_report)
             d = report.to_dict()
             # Add collection metadata for better diagnostics (Issue #378)
-            raw_report = json.loads(json_part)
             summary = raw_report.get("summary", {})
             d["collected"] = summary.get("collected", summary.get("total", 0))
             d["collection_errors"] = summary.get("errors", 0)
@@ -539,6 +539,8 @@ def verify_in_container(
                 msg = f"filtered tests collection error: {filtered_result.get('error', 'unknown')}"
                 if raw:
                     msg += f"\n{raw}"
+            elif filtered_status == "no_tests":
+                msg = f"filtered tests: no tests matched '{test_filter or pytest_args}'"
             else:
                 msg = (
                     f"filtered tests ({filtered_status}): "
