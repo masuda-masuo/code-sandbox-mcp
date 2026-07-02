@@ -24,7 +24,7 @@ from docker.errors import APIError, NotFound
 from fastmcp import Context
 from pydantic import BeforeValidator
 
-from code_sandbox_mcp import image_pins, image_selection, token_broker
+from code_sandbox_mcp import image_pins, image_selection, proxy_lifecycle, token_broker
 from code_sandbox_mcp.journal import (
     read_journal,
     record_boundary_crossing,
@@ -52,7 +52,6 @@ from code_sandbox_mcp.result_cache import (
     is_cacheable,
     set_cached_result,
 )
-from code_sandbox_mcp import proxy_lifecycle
 from code_sandbox_mcp.security import (
     CREATED_AT_LABEL,
     DEFAULT_SECURITY_PROFILE,
