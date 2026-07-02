@@ -961,4 +961,7 @@ class TestVerifyInContainer:
             ))
 
         assert result["gate_passed"] is False
+        assert result["partial_test_run"] is True
         assert result["tests"]["filtered"]["status"] == "not_available"
+        assert "pytest not available" in result["gate_fail_reasons"][0]
+

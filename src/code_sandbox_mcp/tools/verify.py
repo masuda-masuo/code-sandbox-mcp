@@ -543,6 +543,8 @@ def verify_in_container(
                 msg = f"filtered tests collection error: {filtered_result.get('error', 'unknown')}"
                 if raw:
                     msg += f"\n{raw}"
+            elif filtered_status == "not_available":
+                msg = "pytest not available in container"
             elif filtered_status == "no_tests":
                 msg = f"filtered tests: no tests matched '{test_filter or pytest_args}'"
             else:
