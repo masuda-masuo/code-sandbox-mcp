@@ -52,6 +52,7 @@ from code_sandbox_mcp.result_cache import (
     is_cacheable,
     set_cached_result,
 )
+from code_sandbox_mcp import proxy_lifecycle
 from code_sandbox_mcp.security import (
     CREATED_AT_LABEL,
     DEFAULT_SECURITY_PROFILE,
@@ -1043,6 +1044,15 @@ def sandbox_initialize(
     )
     env = _container_env(inject_vcs_token=inject_vcs_token)
 
+    # -- Egress proxy sidecar (#358, Epic #353): opt-in, fail closed --
+    proxy_runtime = None
+    if allow_network and proxy_lifecycle.egress_proxy_enabled():
+        try:
+            proxy_runtime = proxy_lifecycle.ensure_egress_proxy(client)
+        except Exception as e:
+            return f"Error: egress proxy is enabled but unavailable (failing closed): {e}"
+        env.update(proxy_lifecycle.sandbox_proxy_env(proxy_runtime))
+
     try:
         resolved = _resolve_image_ref(resolved)
         validate_image_ref(resolved)
@@ -1093,6 +1103,8 @@ def sandbox_initialize(
         labels={CREATED_AT_LABEL: created_at},
         **resource_overrides,
     )
+    if proxy_runtime is not None:
+        run_kwargs = proxy_lifecycle.apply_network(run_kwargs, proxy_runtime)
 
     try:
         _ensure_image(resolved)
@@ -1110,6 +1122,19 @@ def sandbox_initialize(
         mem_limit=mem_limit,
         cpus=cpus,
     )
+
+    # The CA must be trusted before anything in the sandbox (starting with
+    # the clone below) speaks TLS through the proxy.  Fail closed: a sandbox
+    # whose trust store could not be wired is torn down, not handed out.
+    if proxy_runtime is not None:
+        try:
+            proxy_lifecycle.install_ca(container, proxy_runtime.ca_pem)
+        except Exception as e:
+            try:
+                container.remove(force=True)
+            finally:
+                record_stop(cid)
+            return f"Error: egress proxy CA install failed (failing closed): {e}"
 
     # -- Clone: Shiori fast-path, network fallback (Issue #84, #146) --
     # When pr is set, _setup_pr_branch handles its own clone,
@@ -1442,6 +1467,20 @@ def run_container_and_exec(
     client = _docker()
     env = _container_env(inject_vcs_token=inject_vcs_token)
 
+    # -- Egress proxy sidecar (#358, Epic #353): opt-in, fail closed --
+    proxy_runtime = None
+    if allow_network and proxy_lifecycle.egress_proxy_enabled():
+        try:
+            proxy_runtime = proxy_lifecycle.ensure_egress_proxy(client)
+        except Exception as e:
+            return json.dumps(
+                {
+                    "status": "error",
+                    "error": f"egress proxy is enabled but unavailable (failing closed): {e}",
+                }
+            )
+        env.update(proxy_lifecycle.sandbox_proxy_env(proxy_runtime))
+
     # --- Start container ---
     try:
         resolved = _resolve_image_ref(resolved)
@@ -1454,6 +1493,8 @@ def run_container_and_exec(
             remove=False,
             environment=env,
         )
+        if proxy_runtime is not None:
+            run_kwargs = proxy_lifecycle.apply_network(run_kwargs, proxy_runtime)
         container = client.containers.run(resolved, **run_kwargs)
     except ValueError as e:
         return json.dumps({"status": "error", "error": str(e)})
@@ -1469,6 +1510,22 @@ def run_container_and_exec(
         mem_limit=None,
         cpus=None,
     )
+
+    # Same fail-closed CA wiring as sandbox_initialize (#358).
+    if proxy_runtime is not None:
+        try:
+            proxy_lifecycle.install_ca(container, proxy_runtime.ca_pem)
+        except Exception as e:
+            try:
+                container.remove(force=True)
+            finally:
+                record_stop(container_id)
+            return json.dumps(
+                {
+                    "status": "error",
+                    "error": f"egress proxy CA install failed (failing closed): {e}",
+                }
+            )
 
     # --- Clone: Shiori fast-path, network fallback (Issue #84, #146) ---
     # When pr is set, _setup_pr_branch handles its own clone,
