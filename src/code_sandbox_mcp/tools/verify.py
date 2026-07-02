@@ -501,19 +501,25 @@ def verify_in_container(
 
         if ec == 127:
             return {"status": "not_available", "error": "python3 not found in container"}
+        if ec == 2:
+            _, raw_tail = split_pytest_output(stdout_text)
+            return {"status": "collection_error", "error": "test collection failed", "raw_output": raw_tail}
         if ec == 5:
             return {"status": "no_tests", "error": "no tests found"}
 
-        stdout_text_s = stdout_text if isinstance(stdout_text, str) else ""
-
-        json_part, raw_tail = split_pytest_output(stdout_text_s)
+        json_part, raw_tail = split_pytest_output(stdout_text)
 
         if not json_part:
             return {"status": "no_tests", "error": "no test output produced", "raw_output": raw_tail}
 
         try:
-            report = PytestAdapter.parse_json(json_part)
+            raw_report = json.loads(json_part)
+            report = PytestAdapter.parse(raw_report)
             d = report.to_dict()
+            # Add collection metadata for better diagnostics (Issue #378)
+            summary = raw_report.get("summary", {})
+            d["collected"] = summary.get("collected", summary.get("total", 0))
+            d["collection_errors"] = summary.get("errors", 0)
             return d
         except Exception:
             result: dict = {"status": "error", "error": f"failed to parse pytest output (exit {ec})"}
@@ -527,10 +533,20 @@ def verify_in_container(
         result["tests"]["filtered"] = filtered_result
         if filtered_result.get("status") != "ok":
             result["partial_test_run"] = True
-            result["gate_fail_reasons"] = [
-                f"filtered tests ({filtered_result.get('status', 'unknown')}): "
-                f"{filtered_result.get('failed', 0)} failed"
-            ]
+            filtered_status = filtered_result.get("status", "unknown")
+            if filtered_status == "collection_error":
+                raw = filtered_result.get("raw_output", "")
+                msg = f"filtered tests collection error: {filtered_result.get('error', 'unknown')}"
+                if raw:
+                    msg += f"\n{raw}"
+            elif filtered_status == "no_tests":
+                msg = f"filtered tests: no tests matched '{test_filter or pytest_args}'"
+            else:
+                msg = (
+                    f"filtered tests ({filtered_status}): "
+                    f"{filtered_result.get('failed', 0)} failed"
+                )
+            result["gate_fail_reasons"] = [msg]
             return json.dumps(result)
         # Phase 2: full test suite
         full_result = _run_pytest("")
@@ -541,11 +557,22 @@ def verify_in_container(
 
     if full_result.get("status") == "ok":
         result["gate_passed"] = True
+    elif full_result.get("status") == "collection_error":
+        raw = full_result.get("raw_output", "")
+        msg = f"collection error: {full_result.get('error', 'unknown')}"
+        if raw:
+            msg += f"\n{raw}"
+        result["gate_fail_reasons"] = [msg]
     elif full_result.get("status") == "not_available":
         result["gate_fail_reasons"] = ["pytest not available in container"]
     elif full_result.get("status") == "no_tests":
-        result["gate_pass_reason"] = "no tests found — gate passes"
-        result["gate_passed"] = True
+        if has_filter:
+            result["gate_fail_reasons"] = [
+                f"no tests found (explicit filter specified): {full_result.get('error', 'unknown')}"
+            ]
+        else:
+            result["gate_pass_reason"] = "no tests found — gate passes"
+            result["gate_passed"] = True
     else:
         result["gate_fail_reasons"] = [
             f"tests: {full_result.get('failed', 0)} failure(s)"
