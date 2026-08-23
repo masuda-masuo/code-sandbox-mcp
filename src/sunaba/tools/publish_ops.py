@@ -53,6 +53,24 @@ def _check_merge_in_progress(run: RunFunc) -> dict | None:
     return None
 
 
+def _origin_head_branch_name(run: RunFunc) -> str:
+    """Unadorned branch name that origin/HEAD points at, or ''.
+
+    Same lookup as ``merge_base._resolve_base_branch``: read the symbolic
+    ref ``refs/remotes/origin/HEAD``.  A supplied ``base_branch`` is the
+    frozen default-branch path iff it equals this name (issue #891) -- not
+    iff it is the literal string main or master.
+    """
+    _ec, out, _err = run(
+        "git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null"
+    )
+    text = out.strip()
+    for prefix in ("refs/remotes/origin/", "origin/"):
+        if text.startswith(prefix):
+            return text[len(prefix):]
+    return text
+
+
 def git_prepare_commit(
     run: RunFunc,
     *,
@@ -65,6 +83,8 @@ def git_prepare_commit(
     is_merge: bool = False,
     merge_parent_sha: str | None = None,
     merge_result: dict | None = None,
+    base_branch: str = "",
+    cut_from: dict | None = None,
 ) -> tuple[dict | None, list[str] | None]:
     """Checkout branch, stage, squash unpushed checkpoints, then commit.
 
@@ -106,6 +126,16 @@ def git_prepare_commit(
             of the merge commit.  Only used when ``is_merge`` is True.
         merge_result: When provided and non-None, populated with merge
             rebuild info (e.g. ``merge_rebuilt_parents``).
+        base_branch: When non-empty and origin/<branch> does not exist,
+            cut the new branch from origin/<base_branch> instead of
+            origin/HEAD (issue #891), unless *base_branch* equals the
+            unadorned symbolic target of origin/HEAD -- that is the
+            repository default and keeps the origin/HEAD fallback with
+            no ancestor check.  A missing or unreachable ref is an
+            error -- never a silent reset to the default branch.  Empty
+            (the default) keeps the origin/HEAD fallback unchanged.
+        cut_from: Optional out-dict; on a successful manifest commit the
+            key ``ref`` is set to the git ref the commit was cut from.
 
     Returns ``(error_dict, None)`` on failure or
     ``(None, committed_paths)`` on success.
@@ -139,11 +169,58 @@ def git_prepare_commit(
         # files a prior checkpoint committed via `git add -A` from leaking
         # into the pushed commit -- independent of whether the local branch
         # has an upstream configured.
+        stacked = False
         _, remote_branch_out, _ = run(
             f"git rev-parse --verify origin/{shlex.quote(branch)} 2>/dev/null"
         )
         if remote_branch_out.strip():
             base_ref = f"origin/{shlex.quote(branch)}"
+        elif base_branch and _origin_head_branch_name(run) != base_branch:
+            # Named non-default base: cut from that ref, never origin/HEAD
+            # (issue #891).  The comparison is against origin/HEAD's unadorned
+            # symbolic target (same resolver as merge_base.py), not a
+            # main/master string allowlist -- a repo whose default is develop
+            # with base_branch="develop" must keep the origin/HEAD fallback,
+            # and a branch actually named main that is not the default must
+            # stack.  The ``base_branch and ...`` guard skips the lookup when
+            # base_branch is omitted so that command sequence stays
+            # byte-identical.  Matching the default name also skips the
+            # ancestor check (the frozen origin/HEAD path).
+            stacked = True
+            quoted_base = shlex.quote(base_branch)
+            _, named_out, _ = run(
+                f"git rev-parse --verify origin/{quoted_base} 2>/dev/null"
+            )
+            if named_out.strip():
+                base_ref = f"origin/{quoted_base}"
+            else:
+                run(f"git fetch origin {quoted_base} 2>/dev/null")
+                _, named_out, _ = run(
+                    f"git rev-parse --verify origin/{quoted_base} 2>/dev/null"
+                )
+                if named_out.strip():
+                    base_ref = f"origin/{quoted_base}"
+                else:
+                    _, local_out, _ = run(
+                        f"git rev-parse --verify {quoted_base} 2>/dev/null"
+                    )
+                    if local_out.strip():
+                        base_ref = quoted_base
+                    else:
+                        return {
+                            "status": "error",
+                            "step": "base_branch",
+                            "error": (
+                                f"base_branch {base_branch!r} does not "
+                                f"resolve to a commit (tried "
+                                f"origin/{base_branch} and local "
+                                f"{base_branch}). Publish refuses to cut "
+                                f"from origin/HEAD when a non-default base "
+                                f"was requested. Initialize a container "
+                                f"from that branch, or omit base_branch to "
+                                f"cut from the repository default."
+                            ),
+                        }, None
         else:
             # Fallback: origin/HEAD (set by git clone) points to the
             # remote default branch.
@@ -204,6 +281,22 @@ def git_prepare_commit(
             # `git update-ref refs/remotes/origin/<branch>`.  Merged-in
             # base-advance files are recovered host-side via
             # base_auto_include instead (see below).
+            if stacked:
+                anc_ec, _, _ = run(
+                    f"git merge-base --is-ancestor {base_ref} HEAD"
+                )
+                if anc_ec != 0:
+                    return {
+                        "status": "error",
+                        "step": "base_branch",
+                        "error": (
+                            f"Worktree HEAD is not based on {base_ref}; "
+                            f"cutting a commit from that ref would mix "
+                            f"unrelated trees. Check out {base_branch} "
+                            f"(or initialize a container from it) before "
+                            f"publishing with base_branch={base_branch!r}."
+                        ),
+                    }, None
             reset_ec, reset_out, reset_err = run(
                 f"git reset --mixed {base_ref}"
             )
@@ -213,6 +306,8 @@ def git_prepare_commit(
                     "step": "squash_reset",
                     "error": reset_err or reset_out,
                 }, None
+            if cut_from is not None:
+                cut_from["ref"] = base_ref
         else:
             # No remote ref could be resolved — fail instead of silently
             # skipping the reset, which would re-create the manifest leak.

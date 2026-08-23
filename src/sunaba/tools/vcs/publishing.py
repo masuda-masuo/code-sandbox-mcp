@@ -1234,6 +1234,7 @@ def publish(
         baseline_hashes_arg = baseline_hashes_arg | registry_hashes
 
     merge_info: dict = {}  # populated by git_prepare_commit (merge mode)
+    cut_from: dict = {}  # populated by git_prepare_commit (manifest mode)
     # Upstream-overwrite guard state (#863).  Manifest mode only -- the
     # guard compares declared paths, so a stage-all publish has nothing to
     # declare; the defaults keep the result-building code below branch-free.
@@ -1451,7 +1452,9 @@ def publish(
             base_auto_include=base_auto_include,
             is_merge=merge_is_merge,
             merge_parent_sha=merge_parent_sha,
-            merge_result=merge_info)
+            merge_result=merge_info,
+            base_branch=base_branch,
+            cut_from=cut_from)
         if commit_err:
             return finish_json(commit_err, verified)
 
@@ -1674,6 +1677,8 @@ def publish(
         "scan_summary": scan_result.get("scan_summary"),
     }
     result["staged_files"] = committed_paths
+    if cut_from.get("ref"):
+        result["cut_from"] = cut_from["ref"]
     if manifest:
         result["worktree_leftover"] = worktree_leftover
     result["files_skipped_deleted"] = files_skipped_deleted

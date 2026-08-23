@@ -2353,3 +2353,179 @@ class TestPublishUpstreamOverwriteGuard:
         # Never an empty-history reading.
         assert "no upstream commits" not in result["error"]
         pr_mock.assert_not_called()
+
+
+# ============================================================================
+# issue #891: cut a new branch from base_branch, not origin/HEAD
+# ============================================================================
+
+
+class TestManifestCutFromBaseBranch:
+    """git_prepare_commit must parent onto the named non-default base."""
+
+    def test_stacks_on_existing_non_default_branch(
+        self, repo_setup: dict[str, Any],
+    ) -> None:
+        """A new branch cut with base_branch=feat/existing parents onto
+        that tip; the commit diff vs the parent is only the declared file."""
+        clone = repo_setup["clone_dir"]
+        _git(clone, "checkout", "-b", "feat/existing")
+        (Path(clone) / "from_base.txt").write_text("from base\n")
+        _git(clone, "add", "from_base.txt")
+        _git(clone, "commit", "-m", "work on feat/existing")
+        _git(clone, "push", "-u", "origin", "feat/existing")
+        base_tip = _git(clone, "rev-parse", "HEAD").stdout.strip()
+
+        (Path(clone) / "stacked.txt").write_text("stacked work\n")
+        (Path(clone) / "from_base.txt").write_text("from base\nedited\n")
+
+        cut_from: dict[str, str] = {}
+        err, committed = git_prepare_commit(
+            _make_run(clone),
+            branch="feat/new",
+            message="Stack me",
+            files=["stacked.txt"],
+            base_branch="feat/existing",
+            cut_from=cut_from,
+        )
+        assert err is None, f"git_prepare_commit failed: {err}"
+        assert committed == ["stacked.txt"]
+
+        parent = _git(clone, "rev-parse", "HEAD^").stdout.strip()
+        assert parent == base_tip
+        assert cut_from["ref"] == "origin/feat/existing"
+
+        names = _git(
+            clone, "diff", "--name-only", "HEAD^", "HEAD",
+        ).stdout.strip()
+        assert names == "stacked.txt"
+        assert "edited" in (Path(clone) / "from_base.txt").read_text()
+
+    def test_missing_base_branch_refuses_without_commit(
+        self, repo_setup: dict[str, Any],
+    ) -> None:
+        """An unknown base_branch is an error naming the ref; HEAD is unchanged."""
+        clone = repo_setup["clone_dir"]
+        before = _git(clone, "rev-parse", "HEAD").stdout.strip()
+        (Path(clone) / "x.txt").write_text("x\n")
+
+        err, committed = git_prepare_commit(
+            _make_run(clone),
+            branch="feat/new",
+            message="Nope",
+            files=["x.txt"],
+            base_branch="feat/does-not-exist",
+        )
+        assert err is not None
+        assert err["step"] == "base_branch"
+        assert "feat/does-not-exist" in err["error"]
+        assert committed is None
+        after = _git(clone, "rev-parse", "HEAD").stdout.strip()
+        assert after == before
+
+    def test_diverged_worktree_refuses_without_commit(
+        self, repo_setup: dict[str, Any],
+    ) -> None:
+        """HEAD not based on base_branch is refused; no new commit."""
+        clone = repo_setup["clone_dir"]
+        _git(clone, "checkout", "-b", "feat/other")
+        (Path(clone) / "other.txt").write_text("other\n")
+        _git(clone, "add", "other.txt")
+        _git(clone, "commit", "-m", "other")
+        _git(clone, "push", "-u", "origin", "feat/other")
+        _git(clone, "checkout", "main")
+        before = _git(clone, "rev-parse", "HEAD").stdout.strip()
+        (Path(clone) / "on_main.txt").write_text("main work\n")
+
+        err, committed = git_prepare_commit(
+            _make_run(clone),
+            branch="feat/from-main",
+            message="Bad stack",
+            files=["on_main.txt"],
+            base_branch="feat/other",
+        )
+        assert err is not None
+        assert err["step"] == "base_branch"
+        assert "feat/other" in err["error"]
+        assert committed is None
+        after = _git(clone, "rev-parse", "HEAD").stdout.strip()
+        assert after == before
+
+    def test_omitted_base_branch_still_cuts_from_origin_head(
+        self, repo_setup: dict[str, Any],
+    ) -> None:
+        """No base_branch: parent is origin/HEAD (the default path)."""
+        clone = repo_setup["clone_dir"]
+        default_tip = _git(
+            clone, "rev-parse", "origin/HEAD",
+        ).stdout.strip()
+        (Path(clone) / "only.txt").write_text("only\n")
+        cut_from: dict[str, str] = {}
+        err, committed = git_prepare_commit(
+            _make_run(clone),
+            branch="feat/default-cut",
+            message="Default path",
+            files=["only.txt"],
+            cut_from=cut_from,
+        )
+        assert err is None, f"git_prepare_commit failed: {err}"
+        assert committed == ["only.txt"]
+        parent = _git(clone, "rev-parse", "HEAD^").stdout.strip()
+        assert parent == default_tip
+        assert cut_from["ref"] == "origin/HEAD"
+
+    def test_matching_develop_default_name_resets_to_origin_head(
+        self, tmp_path: Path,
+    ) -> None:
+        """Default branch is develop; base_branch=develop is origin/HEAD.
+
+        Must reset --mixed origin/HEAD and must not run is-ancestor -- the
+        frozen default path, even though the name is neither main nor master.
+        """
+        origin = tmp_path / "origin"
+        clone_path = tmp_path / "clone"
+        origin.mkdir()
+        _git(str(origin), "init", "--bare", "--initial-branch=develop")
+        _git(str(tmp_path), "clone", str(origin), str(clone_path))
+        clone = str(clone_path)
+        _git(clone, "config", "user.email", "gitrepo-fixture@example.com")
+        _git(clone, "config", "user.name", "gitrepo fixture")
+        (Path(clone) / "README.md").write_text("# Initial\n")
+        _git(clone, "add", "README.md")
+        commit = _git(clone, "commit", "-m", "Initial commit")
+        assert commit.returncode == 0, commit.stderr
+        push = _git(clone, "push", "origin", "develop")
+        assert push.returncode == 0, push.stderr
+        head = _git(
+            clone, "symbolic-ref",
+            "refs/remotes/origin/HEAD", "refs/remotes/origin/develop",
+        )
+        assert head.returncode == 0, head.stderr
+
+        (Path(clone) / "only.txt").write_text("only\n")
+        recorded: list[str] = []
+        inner = _make_run(clone)
+
+        def run(
+            cmd: str, env: dict[str, str] | None = None,
+        ) -> tuple[int, str, str]:
+            recorded.append(cmd)
+            return inner(cmd, env)
+
+        cut_from: dict[str, str] = {}
+        err, committed = git_prepare_commit(
+            run,
+            branch="feat/from-develop",
+            message="Default by name",
+            files=["only.txt"],
+            base_branch="develop",
+            cut_from=cut_from,
+        )
+        assert err is None, f"git_prepare_commit failed: {err}"
+        assert committed == ["only.txt"]
+        default_tip = _git(clone, "rev-parse", "origin/HEAD").stdout.strip()
+        parent = _git(clone, "rev-parse", "HEAD^").stdout.strip()
+        assert parent == default_tip
+        assert cut_from["ref"] == "origin/HEAD"
+        assert any("reset --mixed origin/HEAD" in c for c in recorded)
+        assert not any("merge-base --is-ancestor" in c for c in recorded)
