@@ -896,7 +896,26 @@ class TestGetLastActivity:
             result = get_last_activity_per_container()
             assert "cid-a" in result
             assert "cid-b" in result
-            assert result["cid-a"] >= result["cid-b"]
+
+            # Each container's value is the ts of ITS OWN last record -- that
+            # is the guarantee, and it is exact regardless of how the wall
+            # clock falls.  The previous assertion compared the two containers
+            # (`cid-a >= cid-b`) in the direction opposite to the write order,
+            # so it held only while all three records landed inside one second
+            # and failed the moment the second ticked between them (#893).
+            records = [
+                json.loads(line)
+                for line in log_path.read_text().splitlines()
+                if line.strip()
+            ]
+            last_ts = {}
+            for record in records:
+                last_ts[record["container_id"]] = record["ts"]
+            assert result == last_ts
+
+            # cid-b was written last, so its activity can only be at or after
+            # cid-a's -- the ordering the write sequence actually guarantees.
+            assert result["cid-b"] >= result["cid-a"]
 
 
 # ---------------------------------------------------------------------------
