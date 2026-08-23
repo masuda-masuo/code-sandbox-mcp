@@ -749,6 +749,126 @@ class TestPublishManifest:
 
     @patch("sunaba.tools.vcs.publishing._docker")
     @patch("sunaba.tools.vcs.publishing.record_boundary_crossing")
+    def test_manifest_result_reports_cut_from_origin_head(
+        self,
+        mock_record: MagicMock,
+        mock_docker: MagicMock,
+    ) -> None:
+        """The publish result names the ref the commit was cut from."""
+        container = _make_publish_container([
+            (0, b"", b""),  # test -f 'declared.txt'
+            (1, b"", b""),  # rev-parse --verify HEAD^2
+            (0, b"", b""),  # git fetch origin
+            (0, b"none\n", b""),  # MERGE_HEAD check
+            (0, b"", b""),  # checkout -b
+            (1, b"", b""),  # rev-parse --verify origin/fix/x
+            (0, b"abc1234", b""),  # rev-parse --verify origin/HEAD
+            (0, b"", b""),  # git reset --mixed origin/HEAD
+            (0, b"", b""),  # git add -- 'declared.txt'
+            (1, b"diff --git a/f b/f\n", b""),
+            (0, b"[fix/x abc1234] Fix", b""),
+            (0, b"declared.txt\n", b""),
+            (0, b"", b""),  # git status --porcelain -z
+            (0, b"pushed", b""),
+            (0, b"abc1234def5678", b""),
+        ])
+        mock_docker.return_value = _make_client_mock(container)
+
+        result = _decode(publish(
+            container_id="abc123def456",
+            repo="owner/repo",
+            branch="fix/x",
+            message="Fix",
+            files=["declared.txt"],
+        ))
+
+        assert result["status"] == "pushed"
+        assert result["cut_from"] == "origin/HEAD"
+
+    @patch("sunaba.tools.vcs.publishing._docker")
+    @patch("sunaba.tools.vcs.publishing.record_boundary_crossing")
+    def test_manifest_named_base_cuts_from_origin_base_branch(
+        self,
+        mock_record: MagicMock,
+        mock_docker: MagicMock,
+    ) -> None:
+        """base_branch=feat/existing cuts from that ref, not origin/HEAD."""
+        container = _make_publish_container([
+            (0, b"", b""),  # test -f 'stacked.txt'
+            (1, b"", b""),  # rev-parse --verify HEAD^2
+            (0, b"", b""),  # git fetch origin
+            (0, b"none\n", b""),  # MERGE_HEAD check
+            (0, b"", b""),  # checkout -b
+            (1, b"", b""),  # rev-parse --verify origin/feat/new
+            (0, b"cafebabe\n", b""),  # rev-parse origin/feat/existing
+            (0, b"", b""),  # merge-base --is-ancestor
+            (0, b"", b""),  # git reset --mixed origin/feat/existing
+            (0, b"", b""),  # git add -- 'stacked.txt'
+            (1, b"diff --git a/s b/s\n", b""),
+            (0, b"[feat/new abc1234] Stack", b""),
+            (0, b"stacked.txt\n", b""),
+            (0, b"", b""),  # git status --porcelain -z
+            (0, b"pushed", b""),
+            (0, b"abc1234def5678", b""),
+        ])
+        mock_docker.return_value = _make_client_mock(container)
+
+        result = _decode(publish(
+            container_id="abc123def456",
+            repo="owner/repo",
+            branch="feat/new",
+            message="Stack",
+            files=["stacked.txt"],
+            base_branch="feat/existing",
+        ))
+
+        assert result["status"] == "pushed"
+        assert result["cut_from"] == "origin/feat/existing"
+        cmds = [_exec_cmd(c) for c in container.exec_run.call_args_list]
+        assert any("git reset --mixed origin/feat/existing" in c for c in cmds)
+        assert not any("git reset --mixed origin/HEAD" in c for c in cmds)
+
+    @patch("sunaba.tools.vcs.publishing._docker")
+    @patch("sunaba.tools.vcs.publishing.record_boundary_crossing")
+    def test_manifest_missing_base_branch_refuses_without_push(
+        self,
+        mock_record: MagicMock,
+        mock_docker: MagicMock,
+    ) -> None:
+        """Unknown base_branch names the ref, makes no commit and no push."""
+        container = _make_publish_container([
+            (0, b"", b""),  # test -f 'x.txt'
+            (1, b"", b""),  # rev-parse --verify HEAD^2
+            (0, b"", b""),  # git fetch origin
+            (0, b"none\n", b""),  # MERGE_HEAD check
+            (0, b"", b""),  # checkout -b
+            (1, b"", b""),  # rev-parse --verify origin/feat/new
+            (0, b"", b""),  # rev-parse origin/feat/does-not-exist
+            (0, b"", b""),  # fetch origin feat/does-not-exist
+            (0, b"", b""),  # rev-parse origin/feat/does-not-exist again
+            (0, b"", b""),  # rev-parse local feat/does-not-exist
+        ])
+        mock_docker.return_value = _make_client_mock(container)
+
+        result = _decode(publish(
+            container_id="abc123def456",
+            repo="owner/repo",
+            branch="feat/new",
+            message="Nope",
+            files=["x.txt"],
+            base_branch="feat/does-not-exist",
+        ))
+
+        assert result["status"] == "error"
+        assert result["step"] == "base_branch"
+        assert "feat/does-not-exist" in result["error"]
+        cmds = [_exec_cmd(c) for c in container.exec_run.call_args_list]
+        assert not any("git reset --mixed" in c for c in cmds)
+        assert not any("git commit" in c for c in cmds)
+        assert not any("git push" in c for c in cmds)
+
+    @patch("sunaba.tools.vcs.publishing._docker")
+    @patch("sunaba.tools.vcs.publishing.record_boundary_crossing")
     def test_manifest_reports_nonempty_worktree_leftover(
         self,
         mock_record: MagicMock,

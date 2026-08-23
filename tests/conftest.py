@@ -339,6 +339,14 @@ def _make_publish_container(
                 return (ancestor_check_result[0], (ancestor_check_result[1], ancestor_check_result[2]))
             return (1, (b"", b""))
 
+        # --- origin/HEAD symbolic name (#891) ---
+        # git_prepare_commit looks this up when base_branch is set so it
+        # can tell "the repo default" from "a branch that happens to be
+        # named main".  Do not consume a positional exec_returns slot;
+        # FakeRun sequences that pass base_branch="main" stay on origin/HEAD.
+        if "symbolic-ref" in cmd_str and "origin/HEAD" in cmd_str:
+            return (0, (b"refs/remotes/origin/main\n", b""))
+
         # --- exec_in_container: git diff-tree ---
         # Only intercept exec_in_container calls (cmd passed as keyword,
         # no positional args).  _run calls (positional first arg) are for

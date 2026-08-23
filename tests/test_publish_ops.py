@@ -38,6 +38,11 @@ class RecordingRun:
         self, cmd: str, env: dict[str, str] | None = None
     ) -> tuple[int, str, str]:
         self.calls.append((cmd, env))
+        # origin/HEAD symbolic-ref is an extra lookup on the named-base
+        # path (issue #891).  Do not consume a scripted return so FakeRun
+        # sequences that pass base_branch stay aligned on origin/HEAD.
+        if "symbolic-ref" in cmd and "origin/HEAD" in cmd:
+            return 0, "refs/remotes/origin/main\n", ""
         if self.idx < len(self.returns):
             # Simulate the real _run returning utf-8 decoded text
             ec, out, err = self.returns[self.idx]
@@ -871,6 +876,66 @@ class TestGitPrepareCommitManifestBaseRef:
         # No fetch needed
         fetch_calls = [c for c in cmd_strs if "fetch" in c]
         assert len(fetch_calls) == 0, "no fetch should be needed when origin/dev exists"
+
+
+class TestGitPrepareCommitCutFromBaseBranch:
+    """Issue #891: named base_branch cuts from that ref, or refuses."""
+
+    def test_named_base_resets_to_origin_base_branch_not_origin_head(
+        self,
+    ) -> None:
+        """origin/<branch> missing + base_branch=feat/existing -> origin/feat/existing."""
+        cut_from: dict[str, str] = {}
+        run = RecordingRun([
+            (0, "none\n", ""),                 # MERGE_HEAD check
+            (0, "", ""),                       # checkout feat/new
+            (0, "\n", ""),                     # rev-parse origin/feat/new (empty)
+            (0, "cafebabe\n", ""),             # rev-parse origin/feat/existing
+            (0, "", ""),                       # merge-base --is-ancestor
+            (0, "", ""),                       # reset --mixed origin/feat/existing
+            (0, "", ""),                       # git add stacked.txt
+            (1, "diff --git a/stacked.txt b/stacked.txt\n", ""),
+            (0, "[feat/new abc1234] Msg\n", ""),
+            (0, "stacked.txt\n", ""),          # diff-tree
+        ])
+        result, committed = git_prepare_commit(
+            run, branch="feat/new", message="Msg",
+            files=["stacked.txt"],
+            base_branch="feat/existing",
+            cut_from=cut_from,
+        )
+        assert result is None, f"git_prepare_commit failed: {result}"
+        assert committed == ["stacked.txt"]
+        assert cut_from["ref"] == "origin/feat/existing"
+        cmd_strs = [c[0] for c in run.calls]
+        assert any("origin/feat/existing" in c for c in cmd_strs)
+        assert not any(
+            "reset --mixed origin/HEAD" in c for c in cmd_strs
+        ), "must not silently reset to origin/HEAD when stacking"
+
+    def test_missing_base_branch_refuses_before_reset(self) -> None:
+        """Unknown base_branch is an error that names the ref; no reset."""
+        run = RecordingRun([
+            (0, "none\n", ""),   # MERGE_HEAD check
+            (0, "", ""),         # checkout
+            (0, "", ""),         # rev-parse origin/feat/new (empty)
+            (0, "", ""),         # rev-parse origin/feat/missing (empty)
+            (0, "", ""),         # fetch origin feat/missing
+            (0, "", ""),         # rev-parse origin/feat/missing again
+            (0, "", ""),         # rev-parse local feat/missing
+        ])
+        result, committed = git_prepare_commit(
+            run, branch="feat/new", message="Msg",
+            files=["x.txt"],
+            base_branch="feat/missing",
+        )
+        assert result is not None
+        assert result["step"] == "base_branch"
+        assert "feat/missing" in result["error"]
+        assert committed is None
+        cmd_strs = [c[0] for c in run.calls]
+        assert not any("reset --mixed" in c for c in cmd_strs)
+        assert not any("commit" in c for c in cmd_strs)
 
 
 # ============================================================================

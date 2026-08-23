@@ -200,6 +200,10 @@ class TestDriftDetection:
         # Environment variable / configuration constants
         "SUNABA_ALLOWED_REPOS",          # egress-proxy allowlist constant
         "SUNABA_CONTAINER_TTL_SECONDS",  # container TTL configuration constant
+
+        # Result-payload keys: named in the guide because the caller must read
+        # them, but they are not tool parameters so no schema carries them.
+        "cut_from",                      # publish: the ref the commit was cut from (#891)
     }
 
     def test_no_drift(self) -> None:

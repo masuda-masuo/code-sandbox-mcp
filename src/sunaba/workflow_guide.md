@@ -171,6 +171,15 @@ Both of these caused real damage on 2026-07-22 (tracked as issue #727).
    `allow_force_push=True` made publish switch to the existing remote branch and produce a
    commit containing only a 15-line deletion -- the PR ended up empty. **Always retry under
    a new branch name** and close the old PR.
+3. **Stacking on a review-pending branch: pass `base_branch`, and read `cut_from`.** Since
+   #891 a `base_branch` naming something other than the repository default makes publish cut
+   the new branch from `origin/<base_branch>` — the commit's parent is that branch's tip, so
+   the PR carries only the new work and merges back cleanly. Before #891 the argument only
+   set the PR's base while the commit was still cut from the default branch, which produced
+   a commit whose declared files carried the base branch's lines and a PR that conflicted
+   with its own base (measured: 6 files). A base ref that cannot be resolved is now an
+   error — never a silent reset to the default. The result reports `cut_from`, the ref the
+   commit was actually cut from; **check it rather than assuming**.
 
 ### When the secret scan blocks you
 
