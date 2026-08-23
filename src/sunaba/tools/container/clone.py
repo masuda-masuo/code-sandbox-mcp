@@ -600,6 +600,7 @@ def _setup_pr_branch(
     authenticated: bool = True,
     open_read_grant: bool = False,
     pip_args: str | None = None,
+    install_deps: bool = True,
 ) -> str:
     """Clone repo and check out PR branch inside the container.
 
@@ -771,9 +772,14 @@ def _setup_pr_branch(
 
     # Step 4: Install dev dependencies (non-fatal).  Manifest-aware: pip
     # for python projects, npm ci/install for JS projects, a fetch-on-build
-    # note for go/rust, a skip note when nothing to install (#798).
-    deps = _install_repo_deps(container, repo, clone_dest, pip_extras, pip_args=pip_args)
-    deps_msg = f" ({deps.note})" if deps.note else ""
+    # note for go/rust, a skip note when nothing to install (#798).  When
+    # *install_deps* is False (the caller, e.g. sandbox_initialize's
+    # apply_from_container carry, performs the install itself after the
+    # carry so a carried change is already in the tree), this step is skipped.
+    deps_msg = ""
+    if install_deps:
+        deps = _install_repo_deps(container, repo, clone_dest, pip_extras, pip_args=pip_args)
+        deps_msg = f" ({deps.note})" if deps.note else ""
 
     _write_clone_meta(container, clone_dest, base_branch=base_ref)
 
@@ -857,6 +863,7 @@ def _setup_branch(
     authenticated: bool = False,
     open_read_grant: bool = False,
     pip_args: str | None = None,
+    install_deps: bool = True,
 ) -> str:
     """Clone repo and check out a named branch inside the container.
 
@@ -1018,9 +1025,15 @@ def _setup_branch(
 
     # Install dev dependencies (non-fatal).  Manifest-aware: pip for python
     # projects, npm ci/install for JS projects, a fetch-on-build note for
-    # go/rust, a skip note when nothing to install (#798).
-    deps = _install_repo_deps(container, repo, clone_dest, pip_extras, pip_args=pip_args)
-    deps_msg = f" ({deps.note})" if deps.note else ""
+    # go/rust, a skip note when nothing to install (#798).  When
+    # *install_deps* is False (the caller, e.g. sandbox_initialize's
+    # apply_from_container carry, performs the install itself after the
+    # carry so a carried change is already in the tree), this step is
+    # skipped.
+    deps_msg = ""
+    if install_deps:
+        deps = _install_repo_deps(container, repo, clone_dest, pip_extras, pip_args=pip_args)
+        deps_msg = f" ({deps.note})" if deps.note else ""
 
     record_copy(
         cid,
