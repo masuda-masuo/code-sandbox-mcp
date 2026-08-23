@@ -11,7 +11,7 @@ import re
 import shlex
 import threading
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Annotated, Any
 
@@ -404,6 +404,243 @@ def sandbox_attach(name_or_id: str, session_label: str | None = None) -> str:
     return json.dumps(result, ensure_ascii=False)
 
 
+# ---------------------------------------------------------------------------
+# Carry an old container's uncommitted worktree into a fresh clone (Issue #889)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _CarryReport:
+    """Outcome of :func:`_carry_worktree` -- never raised, only reported."""
+
+    files: list[str]
+    applied: list[str]
+    conflicts: list[str]
+    untracked: list[str]
+    error: str | None
+    checkpointed_commits: int = 0
+    fallback_base: bool = False
+
+
+def _git_at(container, repo_root):
+    """Return a git executor bound to *repo_root* for *container*.
+
+    Every invocation emits ``cd <repo_root> && git ...`` via the existing
+    ``container.exec_run(["/bin/sh", "-c", cmd])`` convention, so the
+    working directory is captured in the closure and a git command can never
+    run in the wrong place (Issue #889 finding 3).  Directory correctness is
+    no longer a scattered per-command concern that a future edit could
+    forget.
+    """
+    cd = f"cd {shlex.quote(repo_root)} && "
+
+    def _git(*args):
+        cmd = "git " + " ".join(shlex.quote(a) for a in args)
+        return container.exec_run(["/bin/sh", "-c", cd + cmd])
+
+    return _git
+
+
+def _carry_worktree(
+    client: Any,
+    old_cid: str,
+    new_container: Any,
+) -> _CarryReport:
+    """Carry an old container's uncommitted tracked work into a fresh clone.
+
+    Runs entirely on the host (exec into both containers) and never raises;
+    every failure is surfaced as ``_CarryReport.error`` so the caller can
+    decide whether to tear the new container down (Issue #889).  This is the
+    single-init-arg remedy for an ``upstream_overwrite`` publish refusal,
+    replacing the 8-step by-hand re-apply (snapshot-publish, diff, copy,
+    apply --3way, resolve, reset, verify, publish).
+
+    Sequence:
+
+    * ``git diff --binary HEAD`` in the old container (tracked changes only),
+    * write the patch to a host temp file and copy it into the new container
+      via the same mechanism as :func:`copy_file`,
+    * ``git apply --3way`` in the new container, then ``git reset -q`` so the
+      index is clean and only the worktree carries the change (a 3-way apply
+      otherwise leaves unmerged index entries),
+    * read ``git diff --name-only --diff-filter=U`` BEFORE the reset to collect
+      conflicted paths.
+    """
+    def _decode(b: Any) -> str:
+        if b is None:
+            return ""
+        return b.decode("utf-8", errors="replace")
+
+    try:
+        old_container = client.containers.get(old_cid)
+    except Exception:
+        return _CarryReport(
+            files=[], applied=[], conflicts=[], untracked=[],
+            error=f"old container {old_cid[:12]} not found or not running",
+        )
+    # The old container must be alive to diff it.
+    try:
+        old_container.reload()
+    except Exception:
+        pass
+    if getattr(old_container, "status", "running") != "running":
+        return _CarryReport(
+            files=[], applied=[], conflicts=[], untracked=[],
+            error=f"old container {old_cid[:12]} is not running",
+        )
+
+    # 1. Determine the base commit. The source container may hold local
+    #    checkpoint commits (made by ``checkpoint``) on top of the ref it was
+    #    cloned from; the carry must include them. The base is the
+    #    merge-base of HEAD and origin/HEAD; when origin/HEAD is missing (a
+    #    clone without a tracking ref) we fall back to HEAD, which yields no
+    #    checkpointed commits and only carries the uncommitted tree. Every
+    #    git command runs in the source container's own repo root, resolved
+    #    via :func:`resolve_git_root` (which reads it back from the
+    #    container's recorded ``WorkingDir``).  Two bound executors -- never a
+    #    shared cd prefix -- guarantee every git command lands in the right
+    #    directory even when the source and destination clone_dest differ
+    #    (Issue #889 finding 3).
+    src_git = _git_at(old_container, resolve_git_root(old_container))
+    dst_git = _git_at(new_container, resolve_git_root(new_container))
+
+    base_ec, base_out = src_git("merge-base", "HEAD", "origin/HEAD")
+    base = _decode(base_out).strip() if (base_ec == 0 and base_out) else ""
+    fallback_base = not base
+    if fallback_base:
+        base = "HEAD"
+
+    # 2. Capture committed (checkpointed) + uncommitted tracked changes from
+    #    the base. ``git diff --binary <base>`` reaches from the base through
+    #    the worktree + index, so both the local commits and any uncommitted
+    #    edits land in the patch; untracked files are still excluded.
+    ec, out = src_git("diff", "--binary", base)
+    if ec != 0:
+        return _CarryReport(
+            files=[], applied=[], conflicts=[], untracked=[],
+            error=f"git diff in old container failed: {_decode(out).strip()}",
+            checkpointed_commits=0,
+        )
+    patch = out or b""
+
+    # How many local (checkpointed) commits are folded into the carry.
+    checkpointed_commits = 0
+    cec, cout = src_git("rev-list", "--count", f"{base}..HEAD")
+    if cec == 0 and cout:
+        try:
+            checkpointed_commits = int(_decode(cout).strip())
+        except ValueError:
+            checkpointed_commits = 0
+
+    # Untracked files are reported, never carried.
+    ec_u, out_u = src_git("ls-files", "--others", "--exclude-standard")
+    untracked: list[str] = []
+    if ec_u == 0:
+        untracked = [line for line in _decode(out_u).splitlines() if line.strip()]
+
+    # An empty patch is not an error -- there is simply nothing to carry.
+    if not patch.strip():
+        return _CarryReport(
+            files=[], applied=[], conflicts=[], untracked=untracked,
+            error=None, checkpointed_commits=checkpointed_commits,
+            fallback_base=fallback_base,
+        )
+
+    # 2. Land the patch in the new container via the copy_file mechanism so
+    #    ownership/chown behaviour matches every other host->container copy.
+    import tempfile
+
+    from sunaba.tools.file import copy_file
+
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "wb", suffix=".patch", delete=False
+        ) as f:
+            f.write(patch)
+            tmp = f.name
+        copy_res = copy_file(str(new_container.id)[:12], tmp, "/tmp/sunaba-carry.patch")
+        if copy_res.startswith("Error:"):
+            return _CarryReport(
+                files=[], applied=[], conflicts=[], untracked=untracked,
+                error=f"could not copy patch into new container: {copy_res}",
+                checkpointed_commits=checkpointed_commits,
+            )
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+    # 3. Apply with 3-way merge, then reset the index (keep worktree changes).
+    apply_ec, apply_out = dst_git("apply", "--3way", "/tmp/sunaba-carry.patch")
+    # Conflicted paths are read BEFORE the reset, while the index still marks
+    # them unmerged (diff-filter=U).
+    ec_c, out_c = dst_git("diff", "--name-only", "--diff-filter=U")
+    conflicts: list[str] = []
+    if ec_c == 0:
+        conflicts = [line for line in _decode(out_c).splitlines() if line.strip()]
+
+    # A non-zero apply with no conflicted paths means the patch does not apply
+    # at all -- that is a real error, not a resolvable conflict.
+    if apply_ec != 0 and not conflicts:
+        return _CarryReport(
+            files=[], applied=[], conflicts=[], untracked=untracked,
+            error=f"git apply failed: {_decode(apply_out).strip()}",
+            checkpointed_commits=checkpointed_commits,
+        )
+
+    dst_git("reset", "-q")
+
+    ec_f, out_f = dst_git("diff", "--name-only")
+    files: list[str] = []
+    if ec_f == 0:
+        files = [line for line in _decode(out_f).splitlines() if line.strip()]
+    applied = [f for f in files if f not in conflicts]
+    return _CarryReport(
+        files=files, applied=applied, conflicts=conflicts,
+        untracked=untracked, error=None, checkpointed_commits=checkpointed_commits,
+        fallback_base=fallback_base,
+    )
+
+
+def _format_carry_report(report: _CarryReport, old_cid: str) -> str:
+    """Render the bracketed carry segment appended to the init result."""
+    prefix = f"[carried {len(report.files)} file(s) from {old_cid[:12]}: "
+    if not report.files:
+        segment = prefix + "old container had no uncommitted changes]"
+    else:
+        conflict_part = ""
+        if report.conflicts:
+            conflict_part = (
+                f", {len(report.conflicts)} with conflicts: "
+                f"{', '.join(report.conflicts)}"
+            )
+        segment = prefix + f"{len(report.applied)} applied cleanly{conflict_part}]"
+    # Local (checkpointed) commits folded into the carry are reported so the
+    # caller can see that more than the uncommitted tree moved (Issue #889
+    # finding 2).
+    if report.checkpointed_commits:
+        segment = (
+            segment[:-1]
+            + f" ({report.checkpointed_commits} checkpointed commit(s) included)]"
+        )
+    elif report.fallback_base:
+        # origin/HEAD was missing in the source container, so the diff base
+        # fell back to HEAD -- any checkpointed commits sitting on top of the
+        # tracking ref are silently excluded from the carry unless this is
+        # said out loud (Issue #889 finding 3).
+        segment = (
+            segment[:-1]
+            + " (diff base: HEAD — origin/HEAD missing, checkpointed commits "
+            "not included)]"
+        )
+    if report.untracked:
+        segment += f" [untracked not carried: {', '.join(report.untracked)}]"
+    return segment
+
+
 def sandbox_initialize(
     image: str | None = None,
     allow_network: bool = False,
@@ -418,6 +655,7 @@ def sandbox_initialize(
     cpus: float | None = None,
     name: str | None = None,
     session_label: str | None = None,
+    apply_from_container: str | None = None,
 ) -> str:
     """Start a new Docker sandbox container.
 
@@ -433,57 +671,30 @@ def sandbox_initialize(
     init/exec/stop.
 
     Args:
-        image: Docker image to use (e.g. ``python@sha256:...``).
-               Variant aliases resolve to the pinned GHCR digest images
-               (Issue #545): the all-in-one "full", and the lean "neutral" /
-               "python" / "go".  Omit this argument unless you have a reason:
-               the default is the all-in-one image, which carries every
-               toolchain verify can run, so nothing about the project's
-               language has to be guessed (Issue #584).
+        image: Docker image (e.g. ``python@sha256:...``).  Variant aliases
+               resolve to pinned GHCR digest images (Issue #545): "full"
+               (default, every toolchain) or "neutral" / "python" / "go" /
+               "rust" / "js".  Omit it unless you have a reason (Issue #584).
         allow_network: Whether to allow network access (default ``False``).
                Set to ``True`` for VCS operations (git/gh) that need to
                reach GitHub API.  Network access is a boundary-crossing
                operation and should be used only when necessary.
-        clone_repo: Optional ``owner/name`` repository to clone via
-               ``gh repo clone`` over the network (``allow_network`` is
-               auto-enabled).  A *private* repo clones transparently too:
-               the egress proxy opens a read-authorization grant (#419)
-               authenticated with a host-resolved token, so no credential
-               enters the container.
-        clone_dest: Directory the repo is cloned into; it becomes the
-               git root *and* the container's working directory, so
-               every command runs inside the repo by default
-               (default: the workspace, ``/workspace``).
+        clone_repo: Optional ``owner/name`` repository to clone over the
+               network (``allow_network`` auto-enabled).  A *private* repo
+               clones transparently via the egress proxy read grant (#419),
+               so no credential enters the container.
+        clone_dest: Directory the repo is cloned into; it becomes the git
+               root *and* the container's working directory, so commands
+               run inside the repo by default (``/workspace``).
         repo: Repository in ``"owner/name"`` format.
                Required when *pr* or *branch* is specified.
         pr: Pull request number to clone and check out.
                Mutually exclusive with *branch*.
-        branch: Branch name to clone and check out.
-               When set, clones the repository (via ``clone_repo=``) and
-               checks out the specified branch.  Mutually exclusive with
-               *pr*.  A non-existent branch produces an error naming the
-               branch (not a silent fallback to the default branch).
-               Uses the same anonymous-git / read-authorization grant
-               model as the PR path, so private repos work with no token
-               inside the container when the egress proxy is configured.
-               When set, implicitly enables ``allow_network=True``,
-               clones the repository
-               inside the container, checks out the PR head branch,
-               and installs dev dependencies.  Under the egress proxy
-               (#403) this checkout is anonymous: the PR head ref is
-               resolved host-side and the container never receives a
-               token.  This works for public repos with no further
-               setup; for a private repo, the same read-authorization
-               grant (#419) that ``clone_repo`` uses is opened for the
-               anonymous clone + checkout, so no extra steps are needed
-               there either -- the egress proxy must simply be
-               configured with a host-resolvable token (broker /
-               ``GITHUB_TOKEN``) for the grant to actually authenticate.
+        branch: Branch name to clone and check out.  Requires
+               ``clone_repo=``; mutually exclusive with *pr*.
         pip_extras: Pip extras string (e.g. ``"[dev]"``) for dev install.
-               Pass ``None`` to skip pip install entirely.  Also used when
-               *clone_repo* is specified, and skipped automatically (with a
-               log message) when the container has no network access, since
-               PyPI would be unreachable.
+               ``None`` skips pip install; also skipped automatically when
+               the container has no network access.
         pip_args: Additional pip arguments (e.g. ``"--index-url https://download.pytorch.org/whl/cpu"``).
             Ignored when *pip_extras* is ``None`` since pip install is skipped entirely.
         mem_limit: Optional memory-limit override (e.g. ``"2g"``).
@@ -505,6 +716,11 @@ def sandbox_initialize(
                server restarts.  When a container with the same *name*
                already exists and is still running, the call returns an
                error to prevent accidental name collisions (Issue #478).
+        apply_from_container: Optional 12-char prefix of a running
+               container whose uncommitted tracked changes are re-applied
+               into this fresh clone (Issue #889).  Requires ``clone_repo``
+               / ``pr`` / ``branch``; untracked files are not carried and
+               conflicts are not an error.
 
     The image must be pulled locally before use: docker pull <image>
 
@@ -548,6 +764,15 @@ def sandbox_initialize(
     # branch (acceptance criterion #3).  Reject it explicitly.
     if branch is not None and not branch:
         return "Error: branch must not be empty (empty string would clone the default branch)"
+
+    # apply_from_container carries an old container's worktree into a fresh
+    # clone, so it is meaningless without one (Issue #889).
+    if apply_from_container is not None and not (clone_repo or pr or branch):
+        return (
+            "Error: apply_from_container requires clone_repo (or pr/branch) "
+            "to be set; it re-applies an old container's uncommitted changes "
+            "into a freshly cloned repo."
+        )
 
     # When pr is specified, implicitly enable network access.
     if pr is not None:
@@ -754,6 +979,9 @@ def sandbox_initialize(
     # grant (#419) whenever the container is networked; public reads are
     # unaffected.
     open_read_grant = proxied and not container_has_token
+    # Tracks whether a repo is actually present in the new container, so the
+    # carry step (Issue #889) only runs when there is something to apply into.
+    repo_cloned = False
     if clone_repo and branch:
         # Branch checkout path (Issue #675b): _setup_branch handles its
         # own clone with the branch parameter.
@@ -768,7 +996,9 @@ def sandbox_initialize(
                 authenticated=container_has_token,
                 open_read_grant=open_read_grant,
                 pip_args=pip_args,
+                install_deps=False,
             )
+            repo_cloned = True
         except Exception as e:
             # Branch setup failure is non-fatal: the container is still usable.
             logger.warning("Branch setup failed: %s", e)
@@ -786,17 +1016,7 @@ def sandbox_initialize(
             clone_msg = f" (clone_repo failed: {err})"
         else:
             clone_msg = " " + (msg or "")
-        if err is None:
-            deps = _install_repo_deps(
-                container,
-                clone_repo,
-                clone_dest,
-                pip_extras,
-                allow_network=allow_network,
-                pip_args=pip_args,
-            )
-            if deps.note:
-                clone_msg += f" ({deps.note})"
+            repo_cloned = True
     elif clone_repo and pr is not None:
         logger.info(
             "Skipping clone_repo=%s (pr=%s handles its own clone)",
@@ -828,11 +1048,60 @@ def sandbox_initialize(
                     authenticated=container_has_token,
                     open_read_grant=open_read_grant,
                     pip_args=pip_args,
+                    install_deps=False,
                 )
+                repo_cloned = True
             except Exception as e:
                 # PR setup failure is non-fatal: the container is still usable.
                 logger.warning("PR branch setup failed: %s", e)
                 pr_msg = f" (pr setup failed: {e})"
+
+    # -- Carry an old container's uncommitted worktree (Issue #889) --
+    # Runs after the clone/checkout and BEFORE the dev dependency install so
+    # the carried change is present in the worktree when deps resolve.  The
+    # helper never raises; a failure here tears the new container down the
+    # same way other init failures do (no half-initialised container left).
+    carry_msg = ""
+    if apply_from_container is not None and repo_cloned:
+        report = _carry_worktree(client, apply_from_container, container)
+        if report.error is not None:
+            try:
+                container.remove(force=True)
+            except Exception:
+                pass
+            record_stop(cid)
+            return f"Error: {report.error}"
+        carry_msg = _format_carry_report(report, apply_from_container)
+
+    # -- Dev dependency install (Issue #146) --
+    # Runs on every clone path (plain clone, pr, branch) and ALWAYS after the
+    # carry above, so a carried change to pyproject.toml / lock files is
+    # already present in the worktree when deps resolve (Issue #889 finding
+    # 1).  The carry helper runs exactly once, before this block; the
+    # pr/branch setup functions therefore install with install_deps=False and
+    # hand the install to this single site.
+    if repo_cloned and (clone_repo is not None or repo is not None):
+        install_repo = clone_repo if clone_repo is not None else repo
+        if install_repo is None:
+            # Unreachable: the guard above requires at least one of
+            # clone_repo/repo to be set when this branch is entered.
+            return "Error: internal — clone_repo/repo unexpectedly unset"
+        deps = _install_repo_deps(
+            container,
+            install_repo,
+            clone_dest,
+            pip_extras,
+            allow_network=allow_network,
+            pip_args=pip_args,
+        )
+        if deps.note:
+            deps_note = f" ({deps.note})"
+            # PR setup built its message without the deps note; append there.
+            # Plain clone and branch both live in clone_msg.
+            if pr is not None:
+                pr_msg += deps_note
+            else:
+                clone_msg += deps_note
 
     # All setup phases finished — mark the container as a completed, usable
     # init so the orphan reaper never touches it (Issue #298).  Clone / PR
@@ -850,6 +1119,7 @@ def sandbox_initialize(
         cid
         + clone_msg
         + pr_msg
+        + carry_msg
         + net_msg
         + name_msg
         + docker_name_msg
@@ -884,6 +1154,7 @@ async def sandbox_initialize_tool(
     cpus: float | None = None,
     name: str | None = None,
     session_label: str | None = None,
+    apply_from_container: str | None = None,
     ctx: Context | None = None,
 ) -> str:
     """Start a new Docker sandbox container.
@@ -894,20 +1165,18 @@ async def sandbox_initialize_tool(
     for the real result.
 
     Args:
-        image: Docker image, or alias full/neutral/python/go/rust/js (pinned digests).
-               Default: the all-in-one image (every toolchain verify can run).
-        allow_network: Required for pip install, network clones, and publish.
+        image: Docker image, or alias full/neutral/python/go/rust/js
+               (pinned digests).  Default: the all-in-one image.
+        allow_network: Required for pip install, network clones, publish.
         clone_repo: 'owner/name' cloned over the network (auto-enables
-            allow_network; private repos authenticate host-side, no token
-            in container).
+            allow_network; private repos authenticate host-side, no token).
         clone_dest: Directory the repo is cloned into; it becomes the git
             root and the container's working directory.
         repo: 'owner/name'; required with pr.
         pr: PR number to clone and check out (implies allow_network;
             anonymous checkout, no token enters the container).
-            Mutually exclusive with *branch*.
         branch: Branch name to clone and check out.  Mutually exclusive
-            with *pr*.  Requires ``clone_repo=`` to specify the repository.
+            with *pr*.  Requires ``clone_repo=``.
         pip_extras: Extras for dev install, e.g. '[dev]'. None skips pip
             install; also auto-skipped without network.
         pip_args: Extra pip arguments; ignored when pip_extras is None.
@@ -915,6 +1184,9 @@ async def sandbox_initialize_tool(
         cpus: CPU quota.
         name: Container name, resolvable later via sandbox_attach.
         session_label: Session tag recorded in the journal.
+        apply_from_container: 12-char prefix of a running container whose
+            uncommitted tracked changes are re-applied into this fresh
+            clone (requires clone_repo/pr/branch).
 
     Returns:
         Container ID prefix plus clone/checkout/network summary.
@@ -934,6 +1206,7 @@ async def sandbox_initialize_tool(
             cpus=cpus,
             name=name,
             session_label=session_label,
+            apply_from_container=apply_from_container,
         )
 
     if ctx is None:
@@ -1188,8 +1461,7 @@ def run_container_and_exec(
         limit: Max lines per page.
         allow_network: Needed for git/gh/PyPI.
         clone_repo: 'owner/name' cloned over the network (auto-enables
-            allow_network; private repos authenticate host-side, no token
-            in container).
+            allow_network; private repos authenticate host-side, no token).
         clone_dest: Directory the repo is cloned into; it becomes the git
             root and the container's working directory.
         repo: 'owner/name'; required with pr.
