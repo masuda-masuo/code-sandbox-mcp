@@ -45,6 +45,7 @@ class TestCopyProject:
         mock_container = MagicMock()
         mock_container.put_archive.return_value = True
         mock_container.exec_run.side_effect = [
+            (0, b""),       # mkdir
             (0, b"999\n"),  # id -u
             (0, b"999\n"),  # id -g
             (0, b""),       # chown
@@ -70,9 +71,11 @@ class TestCopyProject:
         call_args = mock_container.put_archive.call_args
         assert call_args[0][0] == "/root/shiori"
 
-        # exec_run called 3 times: id -u, id -g, chown as root
-        assert mock_container.exec_run.call_count == 3
-        chown_call = mock_container.exec_run.call_args_list[2]
+        # exec_run called 4 times: mkdir, id -u, id -g, chown as root
+        assert mock_container.exec_run.call_count == 4
+        mkdir_call = mock_container.exec_run.call_args_list[0]
+        assert mkdir_call[0][0] == ["mkdir", "-p", "/root/shiori"]
+        chown_call = mock_container.exec_run.call_args_list[3]
         assert chown_call[0][0] == ["chown", "-R", "999:999", "/root/shiori"]
         assert chown_call[1] == {"user": "root"}
 
@@ -102,6 +105,7 @@ class TestCopyProject:
         mock_container = MagicMock()
         mock_container.put_archive.return_value = True
         mock_container.exec_run.side_effect = [
+            (0, b""),       # mkdir
             (0, b"999\n"),  # id -u
             (0, b"999\n"),  # id -g
             (0, b""),       # chown
@@ -130,8 +134,10 @@ class TestCopyProject:
             names = tar.getnames()
         assert "./app.py" in names
 
-        assert mock_container.exec_run.call_count == 3
-        chown_call = mock_container.exec_run.call_args_list[2]
+        assert mock_container.exec_run.call_count == 4
+        mkdir_call = mock_container.exec_run.call_args_list[0]
+        assert mkdir_call[0][0] == ["mkdir", "-p", "/opt"]
+        chown_call = mock_container.exec_run.call_args_list[3]
         assert chown_call[0][0] == ["chown", "-R", "999:999", "/opt"]
         assert chown_call[1] == {"user": "root"}
 
@@ -193,6 +199,7 @@ class TestCopyProject:
         mock_response.reason = "Not Found"
 
         mock_container = MagicMock()
+        mock_container.exec_run.return_value = (0, b"")
         mock_container.put_archive.side_effect = APIError(
             "404 Client Error: Not Found",
             mock_response,
@@ -209,6 +216,7 @@ class TestCopyProject:
             include_untracked=True,
         )
         assert "Error" in result
+        assert "/nonexistent" in result
 
     @patch("sunaba.tools.file._docker")
     def test_copy_project_exec_run_fails(
@@ -223,7 +231,10 @@ class TestCopyProject:
 
         mock_container = MagicMock()
         mock_container.put_archive.return_value = True
-        mock_container.exec_run.side_effect = RuntimeError("exec failed")
+        mock_container.exec_run.side_effect = [
+            (0, b""),  # mkdir succeeds
+            RuntimeError("exec failed"),  # id -u / ownership fails
+        ]
         mock_client = MagicMock()
         mock_client.containers.get.return_value = mock_container
         mock_docker.return_value = mock_client
@@ -251,7 +262,10 @@ class TestCopyProject:
 
         mock_container = MagicMock()
         mock_container.put_archive.return_value = True
-        mock_container.exec_run.side_effect = PermissionError("permission denied")
+        mock_container.exec_run.side_effect = [
+            (0, b""),  # mkdir succeeds
+            PermissionError("permission denied"),  # chown fails
+        ]
         mock_client = MagicMock()
         mock_client.containers.get.return_value = mock_container
         mock_docker.return_value = mock_client
@@ -280,6 +294,7 @@ class TestCopyProject:
         mock_container = MagicMock()
         mock_container.put_archive.return_value = True
         mock_container.exec_run.side_effect = [
+            (0, b""),       # mkdir
             (0, b"999\n"),  # id -u
             (0, b"999\n"),  # id -g
             (0, b""),       # chown
@@ -296,8 +311,12 @@ class TestCopyProject:
         )
 
         assert "Error" not in result
-        assert mock_container.exec_run.call_count == 3
-        chown_call = mock_container.exec_run.call_args_list[2]
+        assert mock_container.exec_run.call_count == 4
+        mkdir_call = mock_container.exec_run.call_args_list[0]
+        assert mkdir_call[0][0] == [
+            "mkdir", "-p", "/home/sandbox/my project (1)"
+        ]
+        chown_call = mock_container.exec_run.call_args_list[3]
         assert chown_call[0][0] == [
             "chown", "-R", "999:999", "/home/sandbox/my project (1)"
         ]
@@ -374,6 +393,7 @@ class TestCopyProject:
         mock_container = MagicMock()
         mock_container.put_archive.return_value = True
         mock_container.exec_run.side_effect = [
+            (0, b""),       # mkdir
             (0, b"999\n"),
             (0, b"999\n"),
             (0, b""),
@@ -426,6 +446,7 @@ class TestCopyProject:
         mock_container = MagicMock()
         mock_container.put_archive.return_value = True
         mock_container.exec_run.side_effect = [
+            (0, b""),       # mkdir
             (0, b"999\n"),
             (0, b"999\n"),
             (0, b""),
@@ -480,6 +501,7 @@ class TestCopyProject:
         mock_container = MagicMock()
         mock_container.put_archive.return_value = True
         mock_container.exec_run.side_effect = [
+            (0, b""),       # mkdir
             (0, b"999\n"),
             (0, b"999\n"),
             (0, b""),
@@ -554,6 +576,7 @@ class TestCopyProject:
         mock_container = MagicMock()
         mock_container.put_archive.return_value = True
         mock_container.exec_run.side_effect = [
+            (0, b""),         # mkdir
             (0, b"999\n"),    # id -u
             (0, b"999\n"),    # id -g
             (1, b"chown: Operation not permitted\n"),  # chown fails
@@ -645,6 +668,7 @@ class TestCopyProject:
         mock_container = MagicMock()
         mock_container.put_archive.return_value = True
         mock_container.exec_run.side_effect = [
+            (0, b""),       # mkdir
             (0, b"999\n"),
             (0, b"999\n"),
             (0, b""),
@@ -671,6 +695,110 @@ class TestCopyProject:
             names = tar.getnames()
         assert any("project.py" in n for n in names)
         assert any("data.json" in n for n in names)
+
+    @patch("sunaba.tools.file._docker")
+    def test_copy_project_creates_dest_dir_when_missing(
+        self,
+        mock_docker: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """copy_project runs mkdir -p on dest_dir before put_archive."""
+        src_dir = tmp_path / "libproject"
+        src_dir.mkdir()
+        (src_dir / "lib.py").write_text("def run(): pass")
+
+        mock_container = MagicMock()
+        mock_container.put_archive.return_value = True
+        mock_container.exec_run.side_effect = [
+            (0, b""),       # mkdir -p /home/sandbox/new-lib
+            (0, b"999\n"),  # id -u
+            (0, b"999\n"),  # id -g
+            (0, b""),       # chown
+        ]
+        mock_client = MagicMock()
+        mock_client.containers.get.return_value = mock_container
+        mock_docker.return_value = mock_client
+
+        result = copy_project(
+            container_id="abc123",
+            local_src_dir=str(src_dir),
+            dest_dir="/home/sandbox/new-lib",
+            include_untracked=True,
+        )
+
+        assert "Error" not in result
+        assert str(src_dir) in result
+        assert "/home/sandbox/new-lib" in result
+
+        assert mock_container.exec_run.call_count == 4
+        mkdir_call = mock_container.exec_run.call_args_list[0]
+        assert mkdir_call[0][0] == ["mkdir", "-p", "/home/sandbox/new-lib"]
+
+        mock_container.put_archive.assert_called_once()
+        assert mock_container.put_archive.call_args[0][0] == "/home/sandbox/new-lib"
+
+    @patch("sunaba.tools.file._docker")
+    def test_copy_project_mkdir_nonzero_exit_is_error(
+        self,
+        mock_docker: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """mkdir failure (e.g. permission denied) returns an error naming dest_dir."""
+        src_dir = tmp_path / "libproject"
+        src_dir.mkdir()
+        (src_dir / "lib.py").write_text("def run(): pass")
+
+        mock_container = MagicMock()
+        mock_container.exec_run.return_value = (
+            1,
+            b"mkdir: cannot create directory '/forbidden': Permission denied\n",
+        )
+        mock_client = MagicMock()
+        mock_client.containers.get.return_value = mock_container
+        mock_docker.return_value = mock_client
+
+        result = copy_project(
+            container_id="abc123",
+            local_src_dir=str(src_dir),
+            dest_dir="/forbidden",
+            include_untracked=True,
+        )
+
+        assert "Error" in result
+        assert "failed to create destination directory" in result
+        assert "/forbidden" in result
+        assert "Permission denied" in result
+        mock_container.put_archive.assert_not_called()
+
+    @patch("sunaba.tools.file._docker")
+    def test_copy_project_mkdir_raises_error(
+        self,
+        mock_docker: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """exec_run exception during mkdir returns an error naming dest_dir."""
+        src_dir = tmp_path / "libproject"
+        src_dir.mkdir()
+        (src_dir / "lib.py").write_text("def run(): pass")
+
+        mock_container = MagicMock()
+        mock_container.exec_run.side_effect = RuntimeError("docker exec broken")
+        mock_client = MagicMock()
+        mock_client.containers.get.return_value = mock_container
+        mock_docker.return_value = mock_client
+
+        result = copy_project(
+            container_id="abc123",
+            local_src_dir=str(src_dir),
+            dest_dir="/home/sandbox/target",
+            include_untracked=True,
+        )
+
+        assert "Error" in result
+        assert "failed to create destination directory" in result
+        assert "/home/sandbox/target" in result
+        assert "docker exec broken" in result
+        mock_container.put_archive.assert_not_called()
 
 
 # ======================================================================

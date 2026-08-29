@@ -52,6 +52,8 @@ The editing tools are split by intent; picking the wrong one is what makes edits
 | create, or replace a file wholesale | `write_file` |
 | change part of an existing file | `edit_file` (`old_str` / line range / `append`; in `.py` files a def/class signature in `old_str` is resolved through the AST) |
 | bulk or computed rewrites | `transform_file` (runs Python inside the container) |
+| copy a local directory tree into the container | `copy_project` |
+| copy a single local file into the container | `copy_file` |
 
 - **Do not repair a broken edit in place.** `undo_file_edit` restores the pre-edit snapshot.
 - `checkpoint(container_id, message)` is a local commit savepoint, no push. Use it freely;
@@ -61,6 +63,9 @@ The editing tools are split by intent; picking the wrong one is what makes edits
 - **`sandbox_exec` does not interpret `$'...'`**, so multi-line text arrives with literal
   `\n`. Write multi-line content to a file first. List-typed arguments may be stringified
   into a validation error.
+- **`copy_project` creates `dest_dir` automatically if missing.** When transferring a
+  library or reference tree, choose a dedicated destination directory rather than the
+  clone root /workspace (which would overwrite the clone).
 
 ## phase: verify
 
