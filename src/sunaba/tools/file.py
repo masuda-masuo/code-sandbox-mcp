@@ -1086,13 +1086,29 @@ def copy_project(
         tmp.file.close()
 
         # -- Transfer into container ---------------------------------------------
+        # Ensure destination directory exists in container
+        try:
+            mk_ec, mk_out = container.exec_run(["mkdir", "-p", dest_dir])
+        except Exception as e:
+            return f"Error: failed to create destination directory {dest_dir}: {e}"
+
+        if mk_ec != 0:
+            if isinstance(mk_out, tuple):
+                err_text = b"".join(p for p in mk_out if isinstance(p, (bytes, bytearray))).decode("utf-8", errors="replace").strip()
+            elif isinstance(mk_out, (bytes, bytearray)):
+                err_text = mk_out.decode("utf-8", errors="replace").strip()
+            else:
+                err_text = str(mk_out or "").strip()
+            detail_msg = f": {err_text}" if err_text else ""
+            return f"Error: failed to create destination directory {dest_dir} (exit {mk_ec}){detail_msg}"
+
         with open(tmp.name, "rb") as f:
             data = f.read()
         buf = io.BytesIO(data)
         try:
             container.put_archive(dest_dir, buf)
         except APIError as e:
-            return f"Error: {e}"
+            return f"Error: failed to copy to {dest_dir}: {e}"
 
         # -- Normalise ownership --------------------------------------------------
         own_err = _normalize_ownership(container, dest_dir)
