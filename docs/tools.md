@@ -47,7 +47,7 @@ Read, write, and copy files inside the sandbox.
 | `undo_file_edit` | `container_id`, `file_path` (opt), `path` (opt), `steps` (opt) | **Per-edit rollback.** Every `write_file` / `edit_file` / `transform_file` edit snapshots the pre-edit file (host-side, bounded ring per file); this restores the state `steps` edits back (default 1). The replaced content is snapshotted too, so an undo is redoable. When an edit breaks a file, step back with this instead of repairing broken text in place. |
 | `read_file_range` | `container_id`, `file_path` (opt), `path` (opt), `offset` (opt), `limit` (opt), `start_line` (opt), `end_line` (opt), `tail_lines` (opt) | Reads a slice of a file (pagination by line numbers) to prevent context flooding. `tail_lines=N` returns the last N lines, replacing a shell `tail -n N`. |
 | `list_files` | `container_id`, `path` (opt), `max_depth` (opt), `pattern` (opt) | Recursively lists file paths inside the container starting at the specified path. |
-| `copy_project` | `container_id`, `local_src_dir`, `dest_dir` (opt), `include_untracked` (opt) | Copies a host directory into the container using streamed tar archives. By default only git-tracked files (plus `.git/`) are transferred; untracked and gitignored files are left behind. `include_untracked=True` also copies untracked files — gitignored ones still stay behind; a directory that is not a git repository requires the flag and is copied wholesale. |
+| `copy_project` | `container_id`, `local_src_dir`, `dest_dir` (opt), `include_untracked` (opt) | Copies a host directory into the container using streamed tar archives. By default only git-tracked files (plus `.git/`) are transferred; untracked and gitignored files are left behind. `include_untracked=True` also copies untracked files — gitignored ones still stay behind; a directory that is not a git repository requires the flag and is copied wholesale; copy_project creates dest_dir if missing, before transfer (#895). |
 | `copy_file` | `container_id`, `local_src_file`, `dest_path` (opt) | Copies a single file from the host into the sandbox. |
 
 ---
@@ -116,7 +116,7 @@ configuration changes.
 
 | profile | contents |
 |---|---|
-| implement | explore / edit / verify / publish tooling: search + read, the file editors, exec, checkpoints, verify + lint + type, `package_install`, `run_python`, `diff_in_container`, `publish`, `secret_scan_override`, plus `sandbox_attach` (how the worker binds to the container id its brief hands it) and `issue_view` (the issue under work) |
+| implement | explore / edit / verify / publish tooling: search + read, the file editors, exec, checkpoints, verify + lint + type, `package_install`, `run_python`, `diff_in_container`, `publish`, `secret_scan_override`, plus `sandbox_attach` (humans / orchestrators reconnecting by name or id; the worker already has `container_id` in the prompt and passes it to every sunaba tool — kusabi #413 / #416) and `issue_view` (the issue under work) |
 | review | inspection plus the review verdict: search + read, verify + lint + type, `diff_in_container`, `sandbox_pr_review_write`, plus the consumer-granted `sandbox_exec`, `sandbox_attach`, and `issue_view`. No file writes, no background exec, no checkpoints, no publish, no package installs |
 | issue | the minimal GitHub issue surface: `issue_view`, `sandbox_issue_write`, `sandbox_pr_review_write`, plus `read_file_range` for the issue body `issue_view` saves into the container. No editing, no exec, no verify, no publish — but a container is still required, as it is for every sunaba tool |
 
