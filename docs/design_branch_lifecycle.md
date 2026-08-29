@@ -220,6 +220,12 @@ reset onto:
 5. Otherwise **fail**. An unresolved base is an error, never a silent skip — skipping the
    reset is the manifest-leak bypass that `design_merge_auto_include.md` exists to prevent.
 
+When `base_branch` names something other than the repository default (#891), the new
+branch is cut from `origin/<base_branch>` rather than from the default-branch rungs
+above: the commit's parent is that tip, so the PR carries only the new work. A base
+ref that cannot be resolved is an error — never a silent reset to the default. The
+result reports `cut_from`, the ref the commit was actually cut from.
+
 ### Two traps, both with real damage behind them
 
 **The remote base is normally the one fetched at container initialization.** Publish one PR,
@@ -280,3 +286,4 @@ old PR (#727).
 | #727 | container reuse and branch-name reuse traps |
 | #756 / #758 | the default branch is not always `main`/`master`; ask the remote before guessing |
 | #748 | the review base is the merge target, not `HEAD~1` |
+| #891 | a non-default `base_branch` cuts the new branch from `origin/<base_branch>`; the result reports `cut_from` |
