@@ -151,10 +151,11 @@ class TestServerInstructions:
 #   sandbox_exec.  The description gained the exclusion contract and the
 #   two flags (+222 B, measured); the two new schema parameters fit inside
 #   the Args rewrite (net -5 B).  Both per this file's protocol.
-# 2026-09-05: compact 15 tool descriptions (12311 -> 8641 B);
-# keep a small margin, while preserving parameter descriptions unchanged.
-TOTAL_DESCRIPTION_BYTE_LIMIT = 8800
-TOTAL_PARAM_DESCRIPTION_BYTE_LIMIT = 10581
+# 2026-09-05: compact 15 tool descriptions (12311 -> 8641 B).
+# #900 adds 113 B for read_output; retain the compact baseline plus this surface.
+TOTAL_DESCRIPTION_BYTE_LIMIT = 8913
+# #900: read_output parameters and the concrete retrieval hint: measured 10702.
+TOTAL_PARAM_DESCRIPTION_BYTE_LIMIT = 10710
 
 
 def _param_desc_bytes(tool) -> int:

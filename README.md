@@ -151,6 +151,37 @@ Dive deeper into specific topics:
 
 ---
 
+## Compact results and saved execution output
+
+The default MCP response format remains unchanged. Clients that consume
+`structuredContent` can opt in at the connection URL:
+`http://127.0.0.1:8750/mcp?response=compact`.
+Combine with a profile using `?profile=implement&response=compact`; keep the same
+query parameters on every request, including `tools/list` and `tools/call`.
+Use `response=legacy` (or omit it) for clients that parse text-only JSON results.
+
+In compact mode, JSON object results appear directly in `structuredContent`,
+arrays under `items`, and scalar/plain-text results under `result`. There is
+no second JSON decode. The text block contains only a short summary; the full
+payload is not repeated there. The advertised output schema changes only for
+this connection. Tool arguments and error flags are unchanged.
+
+When `sandbox_exec` omits output, it returns an `output_id` if the sanitized
+full output fits the snapshot limit. Read it with
+`read_output(container_id, output_id, offset=100, limit=50)`, or
+`read_output(container_id, output_id, tail_lines=20)`; never rerun a command
+merely to read its next page. Offsets are zero-based in the full sanitized
+stream, before repeated-line/failure compression (stdout on success, combined
+stdout/stderr on failure). Each page includes `shown`, `total_lines`,
+`next_offset`, `has_more`, and `truncated`.
+
+Foreground snapshots are process-local and bounded: 8 MiB per output, 64 MiB
+total UTF-8 payload, at most 128 snapshots, and a one-hour lifetime. Oldest
+snapshots are evicted first. They survive container removal but not server
+restart, and reads require the same container ID spelling as the exec.
+Oversized snapshots return `output_unavailable`; missing/expired IDs return an
+explicit error. Background-job storage and `sandbox_exec_check` are unchanged.
+
 ## License
 
 MIT

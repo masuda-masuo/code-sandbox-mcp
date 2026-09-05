@@ -1185,7 +1185,8 @@ class TestSandboxExecTokenBudgetEnvelope:
     def test_resource_pointer_is_reported_beside_the_output(self) -> None:
         body = "\n".join(f"line{i}" for i in range(10))
         result = self._run(body, max_output_tokens=10_000, limit=10)
-        assert "sandbox_read_journal" in result["resource"]
+        assert "read_output" in result["resource"]
+        assert result["output_id"]
         assert "resource" not in result["output"]
 
     def test_no_resource_key_without_a_token_budget(self) -> None:

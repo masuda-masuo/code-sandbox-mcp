@@ -168,6 +168,7 @@ READ_ONLY_TOOLS = frozenset(
     {
         "get_workflow_guide",
         "read_file_range",
+        "read_output",
         "list_files",
         "search_in_container",
         "diff_in_container",

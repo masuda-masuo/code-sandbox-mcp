@@ -29,6 +29,7 @@ Run commands and manage packages inside the container.
 | Tool Name | Parameters | Description |
 |---|---|---|
 | `sandbox_exec` | `container_id`, `commands` (opt), `working_dir` (opt), `verbose` (opt), `max_lines` (opt), `offset` (opt), `limit` (opt), `timeout` (opt), `max_output_tokens` (opt), `argv` (opt) | Runs commands synchronously inside the container. `commands` are chained with `&&` through a shell; `argv` runs an argument vector directly (no shell quoting). Outputs structured results with pagination options. |
+| `read_output` | `container_id`, `output_id`, `offset` (opt), `limit` (opt), `tail_lines` (opt) | Reads a saved foreground output snapshot without Docker or command re-execution. IDs expire after 1 hour, eviction, or server restart. |
 | `sandbox_exec_background` | `container_id`, `commands`, `working_dir` (opt) | Spawns commands in the background. Returns a `job_id` immediately. |
 | `sandbox_exec_check` | `container_id`, `job_id` | Checks the status of a background job. Returns output if finished, or `"running"`. |
 | `package_install` | `container_id`, `packages` (opt), `editable` (opt), `constraints` (opt), `requirements` (opt), `upgrade` (opt), `extras` (opt), `manager` (opt) | Structured wrapper for package installs (`pip`/`uv`; `manager="npm"` for JS deps). Returns installed package versions and avoids log pollution. |
