@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
 import io
 import json
 import logging
@@ -1346,6 +1347,19 @@ def _gate_read_result(
     )
 
 
+def _conditional_read_result(result: dict[str, Any], validator: str | None) -> str:
+    """Conditionally omit only the returned text, after the normal read guards."""
+    if validator is None or result.get("error") or not isinstance(result.get("content"), str):
+        return json.dumps(result)
+    result = dict(result)
+    digest = hashlib.sha256(result["content"].encode("utf-8")).hexdigest()
+    result["content_hash"] = digest
+    if validator == digest:
+        result.pop("content")
+        result["not_modified"] = True
+    return json.dumps(result)
+
+
 def read_file_range(
     container_id: str,
     file_path: str | None = None,
@@ -1356,20 +1370,24 @@ def read_file_range(
     tail_lines: int | None = None,
     *,
     path: str | None = None,
+    if_content_hash: str | None = None,
 ) -> str:
     """Read lines from *file_path* inside the container.
 
-    ``tail_lines=N`` returns the last N lines -- no shell ``tail`` needed.
+    ``tail_lines=N`` reads the last N lines.
+    ``if_content_hash=""`` returns a text hash; reuse it while retaining
+    that text to omit unchanged content (``not_modified=true``).
 
     Args:
         container_id: Container ID prefix.
         file_path: File path inside the container.
         offset: 0-indexed start line.
         limit: Max lines to return; -1 reads to end of file.
-        start_line: 1-indexed inclusive start. start_line/end_line and
-            offset/limit are mutually exclusive pairs.
-        end_line: 1-indexed inclusive end; default end of file.
+        start_line: 1-based inclusive; cannot mix with offset/limit.
+        end_line: Inclusive end; default EOF.
         tail_lines: Last N lines; use alone.
+        path: Alias for file_path.
+        if_content_hash: SHA-256 hash validator.
 
     Returns:
         JSON: content, total_lines, shown, has_more, next_offset.
@@ -1438,7 +1456,7 @@ def read_file_range(
     if tail_lines is not None:
         result = read_file_lines(container, file_path, offset=0, limit=-1)
         if result.get("error"):
-            return json.dumps(result)
+            return _conditional_read_result(result, if_content_hash)
         lines = result["content"].split("\n")
         # A trailing newline splits into a phantom empty last element, which
         # ``tail`` does not count -- the window has to end before it.
@@ -1454,14 +1472,14 @@ def read_file_range(
         guard_error = _gate_read_result(container, result, container_id)
         if guard_error is not None:
             return guard_error
-        return json.dumps(result)
+        return _conditional_read_result(result, if_content_hash)
     result = read_file_lines(
         container, file_path, offset=resolved_offset, limit=resolved_limit
     )
     guard_error = _gate_read_result(container, result, container_id)
     if guard_error is not None:
         return guard_error
-    return json.dumps(result)
+    return _conditional_read_result(result, if_content_hash)
 
 
 # ---------------------------------------------------------------------------
