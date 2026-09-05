@@ -96,16 +96,10 @@ logger: logging.Logger = logging.getLogger(__name__)
 # session by every client, including the ones that never call the guide, so
 # anything duplicated here is a fixed cost.
 SERVER_INSTRUCTIONS = """\
-sunaba: Docker-sandboxed dev workflow. All tools take the container_id returned by sandbox_initialize. Typical flow:
-1. INIT: sandbox_initialize(clone_repo="owner/repo") clones + installs deps in one call; pr=N checks out a PR branch instead. run_container_and_exec wraps init/exec/stop; sandbox_attach reconnects to a running container; sandbox_stop cleans up.
-2. EXPLORE: search_in_container, read_file_range, list_files (ls/find).
-3. EDIT: write_file creates or wholly overwrites a file; edit_file changes part of an existing one; transform_file runs a Python transform for bulk/computed edits; undo_file_edit restores the pre-edit snapshot. checkpoint / checkpoint_restore are local savepoints.
-4. VERIFY: verify_in_container is the pre-publish gate (tests + lint + type in one call). lint_in_container / type_check_in_container are single-file checks. diff_in_container reviews pending changes before pushing.
-5. PUBLISH: publish(files=[...], create_pr=True) stages the declared paths, commits, pushes, opens the PR. Verify first; publish is the only network exit.
-Issue/PR ops: issue_view (read), sandbox_issue_write (create/comment), sandbox_pr_review_write (formal reviews).
-Prefer dedicated tools over sandbox_exec: grep->search_in_container, cat/head->read_file_range, tail -n N->read_file_range(tail_lines=N), sed -n 'A,Bp' (range read)->read_file_range, sed -i->edit_file/transform_file, pip->package_install, pytest/ruff/pyright->verify/lint/type_check_in_container, git push/gh pr->publish.
-File transfer is one-way (host->container; egress-proxy boundary). To move work between containers: checkpoint + publish from the original, or start fresh with sandbox_initialize(clone_repo=...).
-Concurrency: docker-bound tools return a JSON error with "busy": true when the docker caps are reached instead of hanging; wait and retry, and note it is JSON, not tool output. sandbox_stop / sandbox_list_containers run on a separate recovery pool and stay callable; sandbox_stop (force=False) refuses when it cannot verify unpushed checkpoints.
+sunaba: Docker workspaces. sandbox_initialize(clone_repo="owner/repo") returns container_id; sandbox_attach reconnects, sandbox_stop removes. Details: get_workflow_guide(phase=...).
+Prefer dedicated tools: grep->search_in_container; cat/head, sed -n->read_file_range; tail -n N->read_file_range(tail_lines=N); ls/find->list_files; create/overwrite->write_file; sed -i->edit_file/transform_file; undo->undo_file_edit; deps->package_install.
+Publish code via verify_in_container (lint/type/tests), diff_in_container, publish(files=[...], create_pr=True). checkpoint/checkpoint_restore: local savepoints. Issue/PR ops: issue_view, sandbox_issue_write, sandbox_pr_review_write.
+File copies: host->container only. Move work via checkpoint + publish from the original, or a fresh clone. Busy JSON ("busy": true): wait/retry. sandbox_stop and sandbox_list_containers use a separate recovery pool; sandbox_stop(force=False) refuses if unpushed checkpoints cannot be verified.
 """
 
 mcp = FastMCP("sunaba", instructions=SERVER_INSTRUCTIONS)

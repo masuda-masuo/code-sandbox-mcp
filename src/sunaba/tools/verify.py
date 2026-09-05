@@ -338,17 +338,9 @@ def lint_in_container(container_id: str, file_path: str, fix: bool = False) -> s
 
 
 def type_check_in_container(container_id: str, file_path: str) -> str:
-    """Run a type checker on *file_path* inside the container.
-
-    Returns the same format as :func:`lint_in_container`.
-
-    **Two-phase check**: the type checker first runs on the single file;
-    if no findings are reported, it also runs on the full project scope
-    to catch issues that only appear in project-wide checks.
-
-    Supported:
-    - ``.py`` → ``pyright``
-    - ``.ts``, ``.tsx`` → ``tsc --noEmit``
+    """Type-check file_path, then the project when the file is clean.
+    .py uses pyright; .ts/.tsx use tsc --noEmit.
+    Returns the same findings format as lint_in_container.
 
     Args:
         container_id: 12-character container ID prefix.
@@ -475,28 +467,18 @@ def verify_in_container(
     skip_patch_targets_gate: bool = False,
     test_scope: str = "full",
 ) -> str:
-    """Run the lint/type gates then tests -- the pre-publish quality gate.
+    """Pre-publish gate: project-wide lint/type checks (src/ + tests/,
+    independent of path), then language-detected tests (pytest/jest/go test).
+    Lint/type failure skips tests and sets gate_passed=false; missing tools
+    set lint_type_incomplete, not a failure. test_filter/pytest_args run
+    filtered tests first, then the full suite on success.
 
-    Lint and type-check run first as a precondition, scoped to the
-    project source (src/ + tests/, mirroring CI) independent of *path*;
-    if they fail, tests are NOT run and gate_passed=false.  Missing
-    tools set lint_type_incomplete instead of failing the gate.  The
-    test phase dispatches on detected language (pytest / jest / go
-    test).  With test_filter or pytest_args the filtered tests run
-    first and, when they pass, the full suite runs automatically; the
-    gate decision is always the full-suite result.  The response also
-    carries a structured git diff summary so changes can be reviewed
-    before publish.
-
-    **test_scope="affected"** runs only the tests selected from the
-    change set (fast edit-loop feedback) but NEVER passes the gate
-    (``gate_passed`` false, ``partial_test_run`` true, success
-    unrecorded) -- a full verify (default scope) is still required
-    before publish.  Unnarrowable change sets (config/conftest,
-    deletions, non-.py, non-Python, selector failure) widen to full;
-    reason: ``test_selection.widened_to_full_reason``.  Full and
-    affected runs carry ``test_selection`` and a stable ``diff_hash``;
-    errors carry an empty selection, null hash.
+    test_scope="affected" selects changed-code tests: gate_passed=false,
+    partial_test_run=true, no recorded success; full verify is required to publish.
+    Unnarrowable changes (config/conftest, deletions, non-.py/non-Python,
+    selector failure) widen to full; see test_selection.widened_to_full_reason.
+    Returns diff_summary, test_selection, stable diff_hash; errors have empty
+    selection and null hash.
 
     Args:
         container_id: Container ID prefix.

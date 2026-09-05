@@ -11,10 +11,13 @@ from __future__ import annotations
 import asyncio
 import re
 
+import pytest
+
 from sunaba import server
 from sunaba.workflow_guide import _load_guide, _parse_phases
 
 DESCRIPTION_BYTE_LIMIT = 2048
+SERVER_INSTRUCTION_BYTE_LIMIT = 1024
 
 
 def _tools(mod):
@@ -71,9 +74,9 @@ class TestServerInstructions:
 
     def test_instructions_within_budget(self) -> None:
         size = _byte_len(server.SERVER_INSTRUCTIONS)
-        assert 0 < size <= DESCRIPTION_BYTE_LIMIT, (
+        assert 0 < size <= SERVER_INSTRUCTION_BYTE_LIMIT, (
             f"SERVER_INSTRUCTIONS is {size} bytes "
-            f"(must be 1..{DESCRIPTION_BYTE_LIMIT})"
+            f"(must be 1..{SERVER_INSTRUCTION_BYTE_LIMIT})"
         )
 
     def test_instructions_wired_into_mcp(self) -> None:
@@ -148,7 +151,9 @@ class TestServerInstructions:
 #   sandbox_exec.  The description gained the exclusion contract and the
 #   two flags (+222 B, measured); the two new schema parameters fit inside
 #   the Args rewrite (net -5 B).  Both per this file's protocol.
-TOTAL_DESCRIPTION_BYTE_LIMIT = 12362
+# 2026-09-05: compact 15 tool descriptions (12311 -> 8641 B);
+# keep a small margin, while preserving parameter descriptions unchanged.
+TOTAL_DESCRIPTION_BYTE_LIMIT = 8800
 TOTAL_PARAM_DESCRIPTION_BYTE_LIMIT = 10581
 
 
@@ -237,3 +242,54 @@ class TestWorkflowGuidePhases:
             f"phase mismatch: description has {sorted(desc_phases)}, "
             f"guide has {sorted(actual_phases)}"
         )
+
+
+class TestCompactContracts:
+    """Keep decision-critical facts in visible descriptions, before Args."""
+
+    @pytest.mark.parametrize(("name", "required"), [
+        ("verify_in_container", (
+            "Lint/type failure skips tests", "lint_type_incomplete",
+            'test_scope="affected"', "gate_passed=false",
+            "partial_test_run=true", "full verify is required to publish",
+            "widen to full", "test_selection.widened_to_full_reason",
+            "empty", "null hash",
+        )),
+        ("edit_file", (
+            "exactly one mode", "unique match", "expected_count",
+            "mismatch writes nothing", "no string fallback",
+            "original text", "rejects overlaps", "all or none",
+        )),
+        ("transform_file", (
+            "container-side Python", "transform(text: str) -> str",
+            "file_path", "OR paths", "all-or-nothing", "undo_file_edit",
+        )),
+        ("copy_project", (
+            "host directory", "tracked files", "include_untracked=True",
+            "excluding gitignored", "container user",
+        )),
+        ("undo_file_edit", ("steps=1", "steps=2", "undoes the undo")),
+        ("sandbox_exec", ("/workspace", "working_dir", "&&", "cwd/env",
+                          "Raw newlines", "JSON-RPC", "argv", "no shell")),
+        ("secret_scan_override", (
+            "permission-gated separately", ".secrets.baseline",
+            "durable after merge", "this container", "server restart",
+            "re-run", "only the next scan",
+        )),
+        ("issue_view", ("host API", "network access is unnecessary",
+                        "paginated", "read_file_range")),
+    ])
+    def test_essential_contracts_survive_compression(self, name, required):
+        descriptions = {t.name: t.description or "" for t in _tools(server)}
+        desc = descriptions[name]
+        for fragment in required:
+            assert fragment in desc, f"{name} lost contract: {fragment}"
+
+    def test_instructions_keep_recovery_and_transfer_boundaries(self):
+        for fragment in (
+            "get_workflow_guide", "host->container only",
+            "publish(files=[...], create_pr=True)",
+            '"busy": true', "wait/retry", "separate recovery pool",
+            "sandbox_stop(force=False)", "unpushed checkpoints cannot be verified",
+        ):
+            assert fragment in server.SERVER_INSTRUCTIONS
