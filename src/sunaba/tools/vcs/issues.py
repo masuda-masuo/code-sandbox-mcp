@@ -42,17 +42,10 @@ def issue_view(
     issue_number: int,
     save_to: str = "/home/sandbox/issue.md",
 ) -> str:
-    """Fetch a GitHub issue host-side and save its body into the container.
-
-    Works on any container -- allow_network is not required.  The
-    response is a summary plus a file handle; read the full text with
-    read_file_range.
-
-    Issue comments and PR review comments are fetched automatically (with
-    auto-pagination) and appended to the saved file in a ``## Comments``
-    section, with ``author``, ``timestamp``, and (for PRs) review state
-    and file location.  Fetched by the host-side API so no network is
-    needed inside the container.
+    """Fetch an issue/PR and all paginated comments/reviews via the host API;
+    container network access is unnecessary. Saves body and a ## Comments
+    section (author, timestamp, review state/location) in the container.
+    Returns a summary and file handle; read the full text with read_file_range.
 
     Args:
         container_id: Container ID prefix.

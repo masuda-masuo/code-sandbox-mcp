@@ -25,11 +25,8 @@ def checkpoint(
     message: str,
     working_dir: str | None = None,
 ) -> str:
-    """Create a local Git checkpoint (commit only, no push).
-
-    Container-local operation: no verify gate, no confirmation token,
-    no network access required.  Use this frequently during edit/verify
-    loops so you can roll back to any save point.
+    """Create a local Git commit savepoint: no push, network, verify gate,
+    or confirmation token. Restore with checkpoint_restore.
 
     Args:
         container_id: 12-character container ID prefix.
@@ -115,10 +112,8 @@ def checkpoint_list(
     working_dir: str | None = None,
     limit: int = 20,
 ) -> str:
-    """List unpushed local Git checkpoints (no push, no verify, no token).
-
-    Shows only commits that have not been pushed to any remote.  After
-    :func:`publish` succeeds the list naturally becomes empty.
+    """List local commits not pushed to any remote; publish empties the list.
+    No push, verify gate, or token.
 
     Args:
         container_id: 12-character container ID prefix.

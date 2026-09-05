@@ -164,16 +164,10 @@ def write_file(
     file_contents: str,
     dest_dir: str = WORKSPACE,
 ) -> str:
-    """Create a file, or fully overwrite an existing one.
-
-    The file becomes exactly file_contents.  This tool never does
-    partial updates: to change part of an existing file (string
-    replace, line range, append) use edit_file; for bulk or computed
-    edits use transform_file.
-
-    An existing file's pre-write content is snapshotted first;
-    undo_file_edit restores it.  On .py files, content that does not
-    parse is flagged with a warning in the echo.
+    """Create or fully overwrite a file with file_contents.
+    Use edit_file for partial changes, transform_file for computed edits.
+    Existing content is snapshotted for undo_file_edit; invalid .py syntax
+    produces a warning.
 
     Args:
         container_id: Container ID prefix.
@@ -588,32 +582,20 @@ def edit_file(
     line: int | None = None,
     ast: bool | None = None,
 ) -> str:
-    """Edit part of an existing file in the container.
+    """Edit an existing file; use write_file to create or fully overwrite.
+    Choose exactly one mode: old_str, 1-based inclusive start_line/end_line,
+    append=True, or transactional edits.
 
-    Exactly one edit mode is required: string replace (old_str),
-    line-range (start_line[/end_line], 1-indexed inclusive), or
-    append=True.  The file must already exist -- to create or fully
-    overwrite one use write_file.
+    old_str requires a unique match (multiline matches replaced whole).
+    Ambiguity returns line numbers; an inexact match retries without
+    whitespace; a miss returns the nearest region. expected_count instead
+    requires that exact occurrence count and replaces all; mismatch writes nothing.
 
-    old_str replaces the exact string you provide (a multi-line match
-    is replaced whole).  A unique match is required: multiple matches
-    are rejected with line numbers, an inexact match retries with
-    whitespace stripped, and a miss returns the nearest region.
+    On .py, definition-like old_str uses AST first. A no-op returns "No changes";
+    failed resolution with a complete replacement definition has no string fallback.
 
-    On .py files a definition-like old_str is resolved via AST first:
-    a no-op returns "No changes", and a failed resolution is surfaced
-    when file_contents is a complete definition (no silent string
-    fallback).
-
-    expected_count declares how many occurrences of old_str the file
-    should contain.  A mismatch is an error and nothing is written; a
-    match replaces every occurrence.
-
-    edits is an ordered list of replacement dicts applied as one
-    transaction.  Matching is against the original text (text
-    produced by an earlier entry is not seen); overlapping matches
-    are refused.  Either all apply or none does: one diff and one
-    undo snapshot per call.  Mutually exclusive with the other modes.
+    edits matches all entries against the original text, rejects overlaps,
+    and applies all or none, with one diff and undo snapshot.
 
     Args:
         container_id: Container ID prefix.
@@ -806,18 +788,9 @@ def undo_file_edit(
     *,
     path: str | None = None,
 ) -> str:
-    """Restore *file_path* to the state it had before a recent edit.
-
-    Every write_file / edit_file / transform_file edit snapshots the
-    pre-edit file automatically, so a broken edit is never a dead end:
-    call this to step back to the file as it was BEFORE the edit,
-    instead of trying to repair broken text in place.  steps=1 (default)
-    is the state right before the last edit; steps=2 the edit before
-    that, and so on.
-
-    The current content is snapshotted too before restoring, so an
-    undo can itself be undone: calling again with steps=1 re-applies
-    the undone edit (redo).
+    """Restore a snapshot made by write_file, edit_file, or transform_file.
+    steps=1 restores the pre-last-edit state; steps=2 goes back two edits.
+    Current content is also snapshotted, so another steps=1 undoes the undo.
 
     Args:
         container_id: Container ID prefix.
@@ -929,20 +902,11 @@ def copy_project(
     dest_dir: str = WORKSPACE,
     include_untracked: bool = False,
 ) -> str:
-    """Copy a local directory into the container as a tar archive.
-
-    By default only git-tracked files (plus ``.git/``) are transferred.
-    Untracked and gitignored files are left behind.  Pass
-    ``include_untracked=True`` to opt in to copying untracked files too.
-
-    The directory's *contents* land in *dest_dir*, so the copied project
-    becomes the git root the container already works in -- verify and publish
-    find it without being told where it is.
-
-    .. note::
-
-       After copying, every file is ``chown``-ed to the container's running
-       user so they remain writable by the file-editing tools.
+    """Copy a host directory's contents into dest_dir as a tar archive;
+    the destination becomes the working git root for verify/publish.
+    Copies tracked files and .git/; include_untracked=True adds untracked
+    files, still excluding gitignored files. Copied files are owned by
+    the container user.
 
     Args:
         container_id: 12-character container ID prefix.
@@ -1825,19 +1789,12 @@ def transform_file(
     *,
     path: str | None = None,
 ) -> str:
-    """Edit files by running Python that computes the new text.
+    """Rewrite files using container-side Python code defining
+    transform(text: str) -> str. Its return value replaces the file;
+    returns a unified diff and snapshots originals for undo_file_edit.
 
-    code executes in the container (never on host); when it finishes,
-    callable transform(text: str) -> str must exist. The returned text
-    replaces file text and returns a unified diff (pre-edit content is
-    snapshotted; undo_file_edit rolls back). Example::
-
-        import re
-        def transform(text):
-            return re.sub("todo", "TODO", text)
-
-    ``paths`` (never with ``file_path``) applies this one transform
-    to each listed file all-or-nothing (staged, then atomic rename).
+    Use file_path for one file OR paths for an all-or-nothing batch
+    (staged, then atomic rename). Example: def transform(text): return text.upper()
 
     Args:
         container_id: Container ID prefix.

@@ -201,13 +201,8 @@ def _ensure_workspace(container: Any, workspace: str) -> None:
 
 
 def sandbox_attach(name_or_id: str, session_label: str | None = None) -> str:
-    """Connect to an existing container by name or ID prefix.
-
-    Looks up the container by:
-
-    1. **Name match** — the ``NAME_LABEL`` Docker label (set via
-       ``sandbox_initialize(name=...)``)
-    2. **ID prefix match** — a 12-character (or longer) container ID prefix
+    """Reconnect by sandbox_initialize(name=...) label, then by container
+    ID prefix (at least 12 characters).
 
     Args:
         name_or_id: A user-assigned container name (from

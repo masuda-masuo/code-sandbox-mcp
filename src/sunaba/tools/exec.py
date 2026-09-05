@@ -59,17 +59,11 @@ def sandbox_exec(
     max_output_tokens: int = 0,
     argv: Annotated[list[str], BeforeValidator(_coerce_list_arg)] | None = None,
 ) -> str:
-    """Execute commands inside a running sandbox container.
-
-    Commands start in the repo root (``/workspace``) -- no leading ``cd``;
-    pass ``working_dir=`` to run elsewhere.
-
-    Commands are chained with '&&' in one exec instance (cwd and env
-    persist between them).  A raw newline inside a command string
-    breaks the JSON-RPC request before it reaches the server: use
-    escaped-newline sequences, write a script file first, or use argv.
-    Prefer the dedicated read/edit/search tools over shell equivalents,
-    and argv mode for git/gh calls where shell quoting is a footgun.
+    """Run commands in the repo root (/workspace); working_dir overrides it.
+    commands are joined by && in one exec, preserving cwd/env.
+    Raw newlines in commands break JSON-RPC: use escaped newlines, a script
+    file, or argv (direct execution, no shell). Prefer dedicated read/edit/search
+    tools and argv for git/gh to avoid shell quoting.
 
     Args:
         container_id: Container ID prefix.
@@ -319,14 +313,9 @@ def sandbox_exec(
 
 
 def sandbox_exec_background(container_id: str, commands: Annotated[list[str], BeforeValidator(_coerce_list_arg)], working_dir: str = "") -> str:
-    """Execute commands in the background inside a running sandbox container.
-
-    Commands start in the repo root (``/workspace``) -- no leading ``cd``;
-    pass ``working_dir=`` to run elsewhere.
-
-    The command is started with ``nohup`` so it continues running even
-    if the MCP connection drops.  Returns a job ID that can be used
-    with :func:`sandbox_exec_check` to poll status.
+    """Run commands with nohup in the repo root (/workspace);
+    working_dir overrides it. Survives MCP disconnects.
+    Returns a job ID for polling with sandbox_exec_check.
 
     Args:
         container_id: 12-character container ID prefix.
@@ -399,14 +388,8 @@ def sandbox_exec_background(container_id: str, commands: Annotated[list[str], Be
 
 
 def sandbox_exec_check(container_id: str, job_id: str) -> str:
-    """Check the status of a background execution job.
-
-    Use this to poll the status of a job started with
-    :func:`sandbox_exec_background`.
-
-    Reads the exit code and output files written by the background
-    job and returns a JSON status object with timing information
-    suitable for human-in-the-loop decision making.
+    """Poll a sandbox_exec_background job.
+    Returns JSON status and timing, plus exit_code and output/error when done.
 
     Args:
         container_id: 12-character container ID prefix.

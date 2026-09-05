@@ -868,17 +868,11 @@ def secret_scan_override(
     files: list[str] | None = None,
     working_dir: str | None = None,
 ) -> str:
-    """Override the secret scan for a publish that was blocked by findings.
-
-    A separate MCP tool (not a ``publish`` argument) so the host can gate
-    it by permission — the human decides whether an override is available.
-
-    With ``SUNABA_SECRETS_BASELINE`` enabled (default) it writes the
-    findings into ``.secrets.baseline`` (durable once merged to the base
-    branch) AND registers their hashes host-side, so the next publish from
-    THIS container suppresses them immediately (registry is lost on server
-    restart; re-run to restore).  Disabled: one-time flag — the current
-    publish passes the scan block; the next one scans fresh.
+    """Override blocked publish findings; permission-gated separately from publish.
+    With SUNABA_SECRETS_BASELINE enabled (default), writes .secrets.baseline
+    (durable after merge to base) and registers hashes host-side for immediate
+    suppression in this container. The registry is lost on server restart;
+    re-run to restore. With baseline disabled, bypasses only the next scan.
 
     Args:
         container_id: 12-character container ID prefix.
