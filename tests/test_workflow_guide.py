@@ -203,6 +203,7 @@ class TestDriftDetection:
 
         # Result-payload keys: named in the guide because the caller must read
         # them, but they are not tool parameters so no schema carries them.
+        "output_id",                     # saved foreground output handle (#900)
         "cut_from",                      # publish: the ref the commit was cut from (#891)
     }
 

@@ -27,6 +27,7 @@ from sunaba.output_control import (
     truncate_by_tokens,
     truncate_output,
 )
+from sunaba.output_store import OUTPUT_STORE
 from sunaba.tools.common import (
     RECOVERY_DOCKER_TIMEOUT,
     _coerce_list_arg,
@@ -77,7 +78,7 @@ def sandbox_exec(
         timeout: Kill after N seconds (0 = no limit); on expiry
             status='timeout', exit_code=124.
         max_output_tokens: Summarize output to this token budget (0 = off);
-            full output stays retrievable via a resource://run/ handle.
+            omitted output is saved for read_output when within cache limits.
         argv: Direct exec, no shell -- quoting and embedded newlines
             pass through literally.  Mutually exclusive with commands.
 
@@ -214,7 +215,6 @@ def sandbox_exec(
         # different units depending on max_output_tokens.  The token figure
         # keeps its own key instead.
         estimated_tokens: int | None = None
-        resource_note: str | None = None
         if max_output_tokens > 0:
             display, original_tokens = truncate_by_tokens(compressed, max_output_tokens)
             total_lines = count_lines(compressed)
@@ -225,7 +225,6 @@ def sandbox_exec(
             # shown count a line total_lines did not, and spent one slot
             # of the page, so output that fit in a single page could
             # still be reported as having more.
-            resource_note = "full output retrievable via sandbox_read_journal"
         else:
             display, meta = truncate_output(
                 compressed,
@@ -266,8 +265,6 @@ def sandbox_exec(
         }
         if estimated_tokens is not None:
             result["estimated_tokens"] = estimated_tokens
-        if resource_note is not None:
-            result["resource"] = resource_note
         if exit_code != 0:
             result["exit_code"] = exit_code
         if stderr_text and verbose != "error_only":
@@ -308,6 +305,14 @@ def sandbox_exec(
     )
     if guard_error is not None:
         return guard_error
+
+    if envelope.truncated or max_output_tokens > 0 or compressed != clean:
+        output_id = OUTPUT_STORE.put(container_id, clean)
+        if output_id is None:
+            result["output_unavailable"] = "Full output exceeds the 8 MiB snapshot limit."
+        else:
+            result["output_id"] = output_id
+            result["resource"] = "read_output(container_id, output_id, offset=0, limit=100)"
 
     return json.dumps(result)
 

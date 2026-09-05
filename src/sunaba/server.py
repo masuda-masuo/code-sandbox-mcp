@@ -20,6 +20,7 @@ from sunaba.security import (
     validate_image_ref,
 )
 
+from .result_format import ResultFormatMiddleware
 from .tool_profiles import ToolProfileMiddleware
 from .tools.common import docker_bound, recovery_bound
 from .tools.container import (
@@ -54,6 +55,7 @@ from .tools.journal import (
     sandbox_trace,
     sandbox_trace_dir,
 )
+from .tools.output import read_output
 from .tools.package import (
     package_install,
 )
@@ -244,6 +246,10 @@ if observability_tools_enabled():
 # Filtering the list is a context-size measure, not a security control --
 # tools/call is untouched.
 mcp.add_middleware(ToolProfileMiddleware())
+mcp.add_middleware(ResultFormatMiddleware())
+
+# Saved output is host-memory-only: no Docker permit or connection needed.
+read_output = mcp.tool()(read_output)
 
 
 # ---------------------------------------------------------------------------

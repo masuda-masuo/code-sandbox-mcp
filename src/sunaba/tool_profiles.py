@@ -131,6 +131,7 @@ _IMPLEMENT = ToolProfile(
             "list_files",
             "run_python",
             "sandbox_exec",
+            "read_output",
             "sandbox_exec_background",
             "sandbox_exec_check",
             # edit
@@ -202,6 +203,7 @@ _REVIEW = ToolProfile(
             # exec: the kusabi review allowlist grants the foreground member;
             # the background half and run_python stay excluded
             "sandbox_exec",
+            "read_output",
             # session entry + issue surface (kusabi#860)
             "sandbox_attach",
             "issue_view",

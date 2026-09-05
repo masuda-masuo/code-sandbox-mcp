@@ -43,6 +43,12 @@ and cheaper.
 - **Exec commands start in the repository root -- /workspace by default.** A leading
   cd to it is a no-op; pass `working_dir=` to run somewhere else.
 
+Large foreground results: when `sandbox_exec` returns `output_id`, use
+`read_output` with that ID and the same container ID to read a line range or tail.
+This reads a saved snapshot without rerunning commands. IDs expire after one hour,
+oldest-entry eviction, or server restart; outputs above 8 MiB are not saved.
+Offsets refer to the full sanitized output, before repeated-line compression.
+
 ## phase: edit
 
 The editing tools are split by intent; picking the wrong one is what makes edits stick.
