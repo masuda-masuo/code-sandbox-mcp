@@ -146,9 +146,8 @@ still recover the contract of the tools it does have.
   the *list*; they do not block `tools/call`. Capability limits stay where
   they are: the client-side allowlists and the server's own checks.
 
-Profile membership lives in `src/sunaba/tool_profiles.py` and ships in the
-same wheel as the server, like the workflow guide (#728). Each profile
-declares which guide phases it covers, and `tests/test_tool_profiles.py`
-fails if a tool named in one of those phases is neither listed nor
-explicitly excluded with a reason — so the profiles cannot drift away from
-`workflow_guide.md`.
+
+## External Tool Integration
+
+- **ashiato integration**: `ashiato` (DuckDB transcript search engine) supports parsing `Codex` session logs (`~/.codex/sessions`) in addition to Claude Code, Cursor, and opencode streams.
+
