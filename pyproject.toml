@@ -24,6 +24,7 @@ Issues = "https://github.com/masuda-masuo/sunaba/issues"
 
 [project.scripts]
 sunaba = "sunaba.server:main"
+sunaba-diagnose = "sunaba.diagnose:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
