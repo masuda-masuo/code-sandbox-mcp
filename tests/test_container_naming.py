@@ -839,13 +839,18 @@ class TestDefaultDockerName:
 
         # Simulate that containers.get("sunaba-kusabi-XXXX") finds an existing one
         # but "sunaba-kusabi-XXXX-2" is free.
+        # Compute the expected base name the same way the production code does.
+        from datetime import datetime
+        _now = datetime.now()
+        _hhmm = f"{_now.hour:02d}{_now.minute:02d}"
+        base_name = f"sunaba-kusabi-{_hhmm}"
         existing = _make_container(container_id="existing123")
         call_count = [0]
 
         def _get(name_or_id):
             call_count[0] += 1
             # First call: the base name exists; second call: the -2 suffix is free
-            if call_count[0] == 1 and "sunaba-kusabi-" in str(name_or_id) and "-2" not in str(name_or_id):
+            if call_count[0] == 1 and name_or_id == base_name:
                 return existing
             raise Exception("not found")
 
